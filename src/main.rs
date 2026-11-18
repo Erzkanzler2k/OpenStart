@@ -20,7 +20,7 @@ use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, FindWindowW, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId,
-    SetForegroundWindow, SetWindowPos, SetWindowsHookExW, UnhookWindowsHookEx,
+    SetForegroundWindow, SetWindowPos, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx,
     KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
@@ -62,10 +62,10 @@ impl Default for Config {
     }
 }
 
-#[derive(Clone)]
 struct AppEntry {
     name: String,
     target: String,
+    icon: Option<egui::TextureHandle>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -95,20 +95,20 @@ fn theme(dark: bool, alpha: u8) -> Theme {
     };
     if dark {
         Theme {
-            bg: mix(0x1b, 0x1b, 0x1f),
-            text: egui::Color32::from_rgb(0xe6, 0xe6, 0xef),
-            muted: egui::Color32::from_rgb(0x8a, 0x8a, 0x99),
-            card: egui::Color32::from_rgb(0x2a, 0x2a, 0x33),
-            card_hi: egui::Color32::from_rgb(0x33, 0x33, 0x3d),
+            bg: mix(0x20, 0x20, 0x20),
+            text: egui::Color32::from_rgb(0xf3, 0xf3, 0xf3),
+            muted: egui::Color32::from_rgb(0x9d, 0x9d, 0x9d),
+            card: egui::Color32::from_rgb(0x2c, 0x2c, 0x2c),
+            card_hi: egui::Color32::from_rgb(0x38, 0x38, 0x38),
             accent: ACCENT,
         }
     } else {
         Theme {
-            bg: mix(0xf7, 0xf7, 0xfa),
-            text: egui::Color32::from_rgb(0x1b, 0x1b, 0x1f),
-            muted: egui::Color32::from_rgb(0x6b, 0x6b, 0x78),
-            card: egui::Color32::from_rgb(0xe9, 0xe9, 0xf0),
-            card_hi: egui::Color32::from_rgb(0xdd, 0xdd, 0xe6),
+            bg: mix(0xf3, 0xf3, 0xf3),
+            text: egui::Color32::from_rgb(0x1a, 0x1a, 0x1a),
+            muted: egui::Color32::from_rgb(0x5f, 0x5f, 0x5f),
+            card: egui::Color32::from_rgb(0xe6, 0xe6, 0xe6),
+            card_hi: egui::Color32::from_rgb(0xd8, 0xd8, 0xd8),
             accent: ACCENT_DARK,
         }
     }
@@ -143,8 +143,128 @@ fn scan_apps() -> Vec<AppEntry> {
         .or_insert("explorer.exe".into());
     map.entry("Параметры".into()).or_insert("ms-settings:".into());
     map.into_iter()
-        .map(|(name, target)| AppEntry { name, target })
+        .map(|(name, target)| AppEntry {
+            name,
+            target,
+            icon: None,
+        })
         .collect()
+}
+
+fn attach_icons(ctx: &egui::Context, apps: &mut [AppEntry]) {
+    for app in apps.iter_mut() {
+        if let Some(img) = load_icon(&app.target) {
+            app.icon = Some(ctx.load_texture(
+                format!("icon-{}", app.name),
+                img,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
+    }
+}
+
+/// Иконка ярлыка или exe в виде RGBA 32×32.
+fn load_icon(target: &str) -> Option<egui::ColorImage> {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetObjectW, SelectObject,
+        BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HGDIOBJ,
+    };
+    use windows_sys::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DestroyIcon, DrawIconEx, GetIconInfo, DI_NORMAL, HICON, ICONINFO,
+    };
+
+    // у «Параметров» нет файла — берём иконку SystemSettings.exe
+    let path = if target.starts_with("ms-settings:") {
+        r"C:\Windows\ImmersiveControlPanel\SystemSettings.exe".to_string()
+    } else {
+        target.to_string()
+    };
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+
+    unsafe {
+        let mut info: SHFILEINFOW = std::mem::zeroed();
+        let ok = SHGetFileInfoW(
+            wide.as_ptr(),
+            0,
+            &mut info,
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_LARGEICON,
+        );
+        if ok == 0 || info.hIcon.is_null() {
+            return None;
+        }
+        let hicon: HICON = info.hIcon;
+        let mut ii: ICONINFO = std::mem::zeroed();
+        if GetIconInfo(hicon, &mut ii) == 0 {
+            DestroyIcon(hicon);
+            return None;
+        }
+        let mut bmp: BITMAP = std::mem::zeroed();
+        GetObjectW(
+            ii.hbmColor,
+            std::mem::size_of::<BITMAP>() as i32,
+            &mut bmp as *mut _ as *mut c_void,
+        );
+        let (w, h) = (bmp.bmWidth.max(1), bmp.bmHeight.max(1));
+
+        let hdc = CreateCompatibleDC(std::ptr::null_mut());
+        let mut bi: BITMAPINFO = std::mem::zeroed();
+        bi.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: 0,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        };
+        let mut bits: *mut c_void = std::ptr::null_mut();
+        let hbmp = CreateDIBSection(
+            hdc,
+            &bi,
+            DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
+        );
+        let old = SelectObject(hdc, hbmp as HGDIOBJ);
+        DrawIconEx(hdc, 0, 0, hicon, w, h, 0, std::ptr::null_mut(), DI_NORMAL);
+
+        let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+        if !bits.is_null() {
+            let raw = std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize);
+            for px in raw.chunks_exact(4) {
+                // DIB: BGRA
+                rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+            }
+        }
+
+        SelectObject(hdc, old);
+        DeleteObject(hbmp as HGDIOBJ);
+        DeleteDC(hdc);
+        if !ii.hbmColor.is_null() {
+            DeleteObject(ii.hbmColor);
+        }
+        if !ii.hbmMask.is_null() {
+            DeleteObject(ii.hbmMask);
+        }
+        DestroyIcon(hicon);
+
+        if rgba.len() == (w * h * 4) as usize {
+            Some(egui::ColorImage::from_rgba_unmultiplied(
+                [w as usize, h as usize],
+                &rgba,
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 fn walk(dir: &Path, out: &mut BTreeMap<String, String>) {
@@ -278,6 +398,29 @@ fn monitor_size(ctx: &egui::Context) -> egui::Vec2 {
         .unwrap_or(egui::vec2(1920.0, 1080.0))
 }
 
+/// Скруглить окно: DWM в Windows 11, плюс регион — на случай, если DWM отказал.
+fn round_window(w: i32, h: i32) {
+    use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+    use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
+    let title: Vec<u16> = "OpenStart11\0".encode_utf16().collect();
+    unsafe {
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if hwnd.is_null() {
+            return;
+        }
+        // DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2
+        let round: u32 = 2;
+        DwmSetWindowAttribute(hwnd, 33, &round as *const u32 as *const _, 4);
+
+        if w > 0 && h > 0 {
+            let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, 18, 18);
+            if !rgn.is_null() {
+                SetWindowRgn(hwnd, rgn, 1);
+            }
+        }
+    }
+}
+
 /// Вывести окно поверх всех и забрать фокус: без этого меню закрывается сразу.
 fn force_foreground() {
     let title: Vec<u16> = "OpenStart11\0".encode_utf16().collect();
@@ -286,6 +429,10 @@ fn force_foreground() {
         if hwnd.is_null() {
             return;
         }
+        ShowWindow(
+            hwnd,
+            windows_sys::Win32::UI::WindowsAndMessaging::SW_RESTORE,
+        );
         SetWindowPos(
             hwnd,
             windows_sys::Win32::UI::WindowsAndMessaging::HWND_TOPMOST,
@@ -433,9 +580,12 @@ impl App {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         start_hook(cc.egui_ctx.clone());
 
+        let mut apps = scan_apps();
+        attach_icons(&cc.egui_ctx, &mut apps);
+
         let app = App {
             cfg: load_config(),
-            apps: scan_apps(),
+            apps,
             query: String::new(),
             mode: Mode::Settings,
             visible: true,
@@ -447,6 +597,7 @@ impl App {
             quit: false,
         };
         app.center_settings(&cc.egui_ctx);
+        round_window(0, 0);
         app
     }
 
@@ -488,6 +639,7 @@ impl App {
         for cmd in [
             V::Decorations(false),
             V::WindowLevel(egui::WindowLevel::AlwaysOnTop),
+            V::Minimized(false),
             V::InnerSize(egui::vec2(w, h)),
             V::OuterPosition(egui::pos2(x, y)),
             V::Visible(true),
@@ -495,12 +647,22 @@ impl App {
         ] {
             ctx.send_viewport_cmd(cmd);
         }
+        round_window(w as i32, h as i32);
         ctx.request_repaint();
     }
 
     fn show_settings(&mut self, ctx: &egui::Context) {
         self.mode = Mode::Settings;
         self.visible = true;
+        // снять скругление от меню, иначе окно настроек останется обрезанным
+        unsafe {
+            use windows_sys::Win32::Graphics::Gdi::SetWindowRgn;
+            let title: Vec<u16> = "OpenStart11\0".encode_utf16().collect();
+            let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+            if !hwnd.is_null() {
+                SetWindowRgn(hwnd, std::ptr::null_mut(), 1);
+            }
+        }
         self.center_settings(ctx);
         use egui::ViewportCommand as V;
         for cmd in [
@@ -533,7 +695,6 @@ impl App {
         if focused {
             self.was_focused = true;
         } else if !self.was_focused && self.opened_at.elapsed().as_millis() < 900 {
-            // окно уже показано — теперь можно по-настоящему забрать фокус
             force_foreground();
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
@@ -546,19 +707,21 @@ impl App {
             return;
         }
 
-        let style = self.cfg.style;
+        let modern = self.cfg.style >= 3;
         let t = theme(self.cfg.dark, self.cfg.alpha);
-        let margin = if style <= 2 { 10 } else { 16 };
+        let margin = if modern { 18 } else { 10 };
+        let cols = if modern { 6 } else { 4 };
+        let tile_w = if modern { 96.0 } else { 88.0 };
+        let tile_h = if modern { 84.0 } else { 84.0 };
 
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
                     .fill(t.bg)
-                    .stroke(egui::Stroke::new(1.0, t.card_hi))
                     .inner_margin(egui::Margin::same(margin)),
             )
             .show(ctx, |ui| {
-                if style <= 2 {
+                if !modern {
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new("OpenStart11")
@@ -571,71 +734,153 @@ impl App {
                 }
 
                 if self.cfg.show_search {
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.query)
-                            .hint_text("Поиск")
-                            .desired_width(f32::INFINITY),
-                    );
-                    if self.focus_search {
-                        resp.request_focus();
-                        self.focus_search = false;
+                    let mut resp = None;
+                    egui::Frame::NONE
+                        .fill(t.card)
+                        .stroke(egui::Stroke::new(1.0, t.card_hi))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(egui::Margin {
+                            left: 12,
+                            right: 12,
+                            top: 7,
+                            bottom: 7,
+                        })
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                // лупа
+                                let (r, _) = ui.allocate_exact_size(
+                                    egui::vec2(14.0, 14.0),
+                                    egui::Sense::hover(),
+                                );
+                                let c = r.center();
+                                ui.painter().circle_stroke(
+                                    c,
+                                    5.0,
+                                    egui::Stroke::new(1.4, t.muted),
+                                );
+                                ui.painter().line_segment(
+                                    [
+                                        c + egui::vec2(3.5, 3.5),
+                                        c + egui::vec2(7.0, 7.0),
+                                    ],
+                                    egui::Stroke::new(1.4, t.muted),
+                                );
+                                ui.add_space(4.0);
+                                resp = Some(ui.add(
+                                    egui::TextEdit::singleline(&mut self.query)
+                                        .hint_text("Поиск приложений")
+                                        .desired_width(f32::INFINITY)
+                                        .frame(false),
+                                ));
+                            });
+                        });
+                    if let Some(r) = resp {
+                        if self.focus_search {
+                            r.request_focus();
+                            self.focus_search = false;
+                        }
                     }
-                    ui.add_space(8.0);
+                    ui.add_space(14.0);
                 }
 
                 let q = self.query.trim().to_lowercase();
-                let list: Vec<(String, String)> = self
+                let matching: Vec<usize> = self
                     .apps
                     .iter()
-                    .filter(|a| q.is_empty() || a.name.to_lowercase().contains(&q))
-                    .map(|a| (a.name.clone(), a.target.clone()))
+                    .enumerate()
+                    .filter(|(_, a)| q.is_empty() || a.name.to_lowercase().contains(&q))
+                    .map(|(i, _)| i)
                     .collect();
 
                 let mut launch: Option<String> = None;
+                let mut open_settings = false;
 
                 if q.is_empty() && self.cfg.tiles {
-                    let cols = ((ui.available_width() + 8.0) / 94.0).floor().max(3.0) as usize;
-                    let take = (cols * 2).min(list.len());
-                    ui.horizontal_wrapped(|ui| {
-                        for (name, target) in list.iter().take(take) {
-                            if tile(ui, name, &t).clicked() {
-                                launch = Some(target.clone());
-                            }
-                        }
-                    });
-                    ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new("Все приложения")
-                            .color(t.muted)
-                            .size(12.0),
+                        egui::RichText::new("Закреплено")
+                            .size(13.0)
+                            .strong()
+                            .color(t.text),
                     );
+                    ui.add_space(8.0);
+                    let take = (cols * 2).min(matching.len());
+                    egui::Grid::new("pins")
+                        .num_columns(cols)
+                        .spacing([4.0, 6.0])
+                        .show(ui, |ui| {
+                            for (n, &idx) in matching.iter().take(take).enumerate() {
+                                if tile(ui, &self.apps[idx], &t, tile_w, tile_h).clicked() {
+                                    launch = Some(self.apps[idx].target.clone());
+                                }
+                                if (n + 1) % cols == 0 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new("Приложения")
+                            .size(13.0)
+                            .strong()
+                            .color(t.text),
+                    );
+                    ui.add_space(4.0);
                 }
 
-                let rest_h = (ui.available_height() - 46.0).max(80.0);
+                let rest_h = (ui.available_height() - 42.0).max(80.0);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .max_height(rest_h)
                     .show(ui, |ui| {
-                        for (name, target) in &list {
-                            if row(ui, name, &t).clicked() {
-                                launch = Some(target.clone());
+                        for &idx in &matching {
+                            if row(ui, &self.apps[idx], &t).clicked() {
+                                launch = Some(self.apps[idx].target.clone());
                             }
                         }
                     });
 
-                ui.add_space(4.0);
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Настройки").clicked() {
-                        self.show_settings(ctx);
-                    }
+                    let (av, _) =
+                        ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+                    ui.painter().circle_filled(av.center(), 13.0, t.card_hi);
+                    let user = std::env::var("USERNAME").unwrap_or_default();
+                    ui.painter().text(
+                        av.center(),
+                        egui::Align2::CENTER_CENTER,
+                        letter(&user),
+                        egui::FontId::proportional(12.0),
+                        t.text,
+                    );
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(&user).size(12.5).color(t.text));
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("Настройки").size(12.5).color(t.muted),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                open_settings = true;
+                            }
+                        },
+                    );
                 });
 
+                if open_settings {
+                    self.show_settings(ctx);
+                }
                 if let Some(target) = launch {
                     launch_target(&target);
                     self.hide(ctx);
-                }            });
+                }
+            });
     }
-
     fn settings_ui(&mut self, ctx: &egui::Context) {
         let mut changed = false;
         egui::SidePanel::left("nav")
@@ -756,6 +1001,7 @@ impl App {
                     }
                     if ui.button("Пересканировать программы").clicked() {
                         self.apps = scan_apps();
+                        attach_icons(ctx, &mut self.apps);
                     }
                     if ui.button("Открыть папку настроек").clicked() {
                         if let Some(dir) = config_path().parent() {
@@ -906,57 +1152,85 @@ impl App {
     }
 }
 
-fn tile(ui: &mut egui::Ui, name: &str, t: &Theme) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(86.0, 100.0), egui::Sense::click());
+fn tile(
+    ui: &mut egui::Ui,
+    app: &AppEntry,
+    t: &Theme,
+    w: f32,
+    h: f32,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
     let painter = ui.painter().with_clip_rect(rect);
     if resp.hovered() {
         painter.rect_filled(rect, egui::CornerRadius::same(6), t.card_hi);
     }
-    let icon = egui::Rect::from_min_size(
-        rect.min + egui::vec2(23.0, 10.0),
-        egui::vec2(40.0, 40.0),
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.center().x, rect.min.y + 26.0),
+        egui::vec2(34.0, 34.0),
     );
-    painter.rect_filled(icon, egui::CornerRadius::same(8), avatar_color(name));
-    painter.text(
-        icon.center(),
-        egui::Align2::CENTER_CENTER,
-        letter(name),
-        egui::FontId::proportional(18.0),
-        egui::Color32::WHITE,
+    if let Some(tex) = &app.icon {
+        painter.image(
+            tex.id(),
+            icon_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    } else {
+        painter.rect_filled(icon_rect, egui::CornerRadius::same(7), avatar_color(&app.name));
+        painter.text(
+            icon_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            letter(&app.name),
+            egui::FontId::proportional(16.0),
+            egui::Color32::WHITE,
+        );
+    }
+    let galley = painter.layout(
+        app.name.clone(),
+        egui::FontId::proportional(11.5),
+        t.text,
+        w - 6.0,
     );
-    painter.text(
-        egui::pos2(rect.center().x, rect.max.y - 32.0),
-        egui::Align2::CENTER_TOP,
-        short(name, 11),
-        egui::FontId::proportional(11.0),
+    painter.galley(
+        egui::pos2(rect.min.x + 3.0, rect.min.y + 48.0),
+        galley,
         t.text,
     );
     resp
 }
 
-fn row(ui: &mut egui::Ui, name: &str, t: &Theme) -> egui::Response {
+fn row(ui: &mut egui::Ui, app: &AppEntry, t: &Theme) -> egui::Response {
     let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.0), egui::Sense::click());
     let painter = ui.painter().with_clip_rect(rect);
     if resp.hovered() {
-        painter.rect_filled(rect, egui::CornerRadius::same(4), t.card_hi);
+        painter.rect_filled(rect, egui::CornerRadius::same(5), t.card_hi);
     }
     let icon = egui::Rect::from_min_size(
-        rect.min + egui::vec2(4.0, 4.0),
-        egui::vec2(22.0, 22.0),
+        rect.min + egui::vec2(6.0, 5.0),
+        egui::vec2(24.0, 24.0),
     );
-    painter.rect_filled(icon, egui::CornerRadius::same(5), avatar_color(name));
+    if let Some(tex) = &app.icon {
+        painter.image(
+            tex.id(),
+            icon,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    } else {
+        painter.rect_filled(icon, egui::CornerRadius::same(5), avatar_color(&app.name));
+        painter.text(
+            icon.center(),
+            egui::Align2::CENTER_CENTER,
+            letter(&app.name),
+            egui::FontId::proportional(11.0),
+            egui::Color32::WHITE,
+        );
+    }
     painter.text(
-        icon.center(),
-        egui::Align2::CENTER_CENTER,
-        letter(name),
-        egui::FontId::proportional(11.0),
-        egui::Color32::WHITE,
-    );
-    painter.text(
-        egui::pos2(rect.min.x + 34.0, rect.center().y),
+        egui::pos2(rect.min.x + 38.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        short(name, 30),
+        short(&app.name, 32),
         egui::FontId::proportional(13.0),
         t.text,
     );
