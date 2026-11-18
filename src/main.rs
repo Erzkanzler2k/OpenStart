@@ -1,242 +1,428 @@
 #![windows_subsystem = "windows"]
 
-//! OpenStart11 — конфигуратор Start11 поверх его родных ключей.
-//!
-//! Start11 хранит все значения строками в
-//! HKCU\Software\Stardock\Start8\Start8.ini\Start8 — там же их читаем и пишем.
-//! Контролы строятся по фактическому содержимому ключа, поэтому редактор
-//! охватывает всё, что Start11 успел записать. Служебные флаги (лицензия, кэш,
-//! миграции) пропускаются.
-//!
-//! Применение: бэкап -> запись только изменённого -> перезапуск explorer.
-//! Чего приложение не делает: активации/обхода лицензии, редактора закреплённых
-//! (подключи Right/RightMode в неразобранном формате) и редактора цветов.
+//! OpenStart11 — самостоятельное меню «Пуск» для Windows 10/11.//!
+//! Меню открывается по клавише Win (низкоуровневый хук клавиатуры), показывает
+//! ярлыки из пользовательского и общего меню «Пуск», ищет по ним и запускает их.
+//! Пять стилей (Windows 7 / Modern / Windows 10 / Windows 11 / Windows App)
+//! рисуются самим приложением. Настройки лежат в
+//! %APPDATA%\OpenStart11\config.json — никакого Start11 и никакого реестра.
 
 use std::collections::BTreeMap;
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Instant;
 
 use eframe::egui;
-use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
-use winreg::RegKey;
+use serde::{Deserialize, Serialize};
+use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, FindWindowW, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId,
+    SetForegroundWindow, SetWindowPos, SetWindowsHookExW, UnhookWindowsHookEx,
+    KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+};
+use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 
-const SUBKEY: &str = r"Software\Stardock\Start8\Start8.ini\Start8";
-const CONFIG_EXE: &str = r"C:\Program Files (x86)\Stardock\Start11\Start11Config.exe";
+const VK_LWIN: u32 = 0x5B;
+const VK_RWIN: u32 = 0x5C;
 
-const BG: egui::Color32 = egui::Color32::from_rgb(0x1b, 0x1b, 0x1f);
-const SIDE: egui::Color32 = egui::Color32::from_rgb(0x15, 0x15, 0x1a);
-const CARD: egui::Color32 = egui::Color32::from_rgb(0x2a, 0x2a, 0x33);
-const CARD_HI: egui::Color32 = egui::Color32::from_rgb(0x33, 0x33, 0x3d);
-const TEXT: egui::Color32 = egui::Color32::from_rgb(0xe6, 0xe6, 0xef);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(0x8a, 0x8a, 0x99);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(0xe0, 0xaf, 0x68);
+const ACCENT_DARK: egui::Color32 = egui::Color32::from_rgb(0xa5, 0x76, 0x2f);
 
 const STYLES: &[(&str, &str)] = &[
     ("Стиль Windows 7", "Классика Windows 7"),
-    ("Стиль Modern", "Обновлённое Windows 7"),
-    ("Стиль Windows 10", "Улучшенный Windows 10"),
-    ("Стиль Windows 11", "Улучшенный Windows 11"),
-    ("Стиль Windows App", "Новый стиль Windows 11"),
+    ("Стиль Modern", "Обновлённая классика"),
+    ("Стиль Windows 10", "Плитки Windows 10"),
+    ("Стиль Windows 11", "Центрированное меню"),
+    ("Стиль Windows App", "Список Windows 11"),
 ];
 
-const NAV: &[&str] = &[
-    "Меню «Пуск»",
-    "Панель задач",
-    "Закреплённые на панели",
-    "Поиск",
-    "Прочие ключи",
-    "Управление",
-    "О программе",
-];
+const NAV: &[&str] = &["Меню «Пуск»", "Управление", "О программе"];
 
-// служебные: лицензия, кэш, флаги первого запуска и миграций — не настройки
-const SKIP: &[&str] = &[
-    "LS",
-    "TextLookupD",
-    "LastSeenOS2",
-    "QC",
-    "MenuMode",
-    "NewInstall",
-    "NewInstallDone",
-    "StartedOnce",
-    "SetupLnk",
-    "SetupLnk11",
-    "CreatedPinned10",
-    "CreatedPinned11",
-    "UpgradedRightSide",
-    "UpgradedRightSide2",
-    "FlushMetro3",
-    "FlushMetro4",
-    "AskedAboutStartButton2",
-    "lRight",
-    "StandardStartMenuOLD",
-];
-
-enum Kind {
-    Bool(bool),
-    Int(i32),
-    Text(String),
+#[derive(Clone, Serialize, Deserialize)]
+struct Config {
+    style: usize,
+    dark: bool,
+    alpha: u8,
+    show_search: bool,
+    tiles: bool,
 }
 
-struct Row {
-    key: String,
-    label: String,
-    kind: Kind,
-}
-
-fn label_of(key: &str) -> &str {
-    match key {
-        "AcrylicBlurEnabled" => "Акрил / размытие меню",
-        "S11_ForceDarkMode" => "Тёмное меню независимо от системы",
-        "S11_UseWallpaperEffect" => "Подложка из обоев",
-        "UseFormicaEffect" => "Эффект подложки (Formica)",
-        "MenuAlphaValue" => "Прозрачность меню, %",
-        "BackgroundAlphaValue" => "Прозрачность фона, %",
-        "CustomColour" => "Свой цвет меню",
-        "CustomColourV" => "Свой цвет меню — значение",
-        "CustomColourTextureMenu" => "Свой цвет текстуры меню",
-        "FullUITexture" => "Текстура на всё меню",
-        "S11_MaxColourOn" => "Кнопка «развернуть» окрашена",
-        "S11_MaxColour" => "Цвет кнопки «развернуть»",
-        "S11_MaxAlpha" => "Прозрачность кнопки «развернуть»",
-        "S11_SchemeFilter" => "Фильтр цветовой схемы",
-        "S11_SchemeApplyTo" => "Схема применяется к",
-        "S11_MirrorOSChoice" => "Повторять выбор темы системы",
-        "ShowRight" => "Правая колонка закреплённых",
-        "ShowIconsOnRight" => "Иконки в правой колонке",
-        "RightIconMode" => "Крупные иконки справа",
-        "TileMode" => "Плитки вместо списка",
-        "LockedIcons" => "Заблокировать раскладку иконок",
-        "SkinIndex" => "Номер скина",
-        "StandardStartMenu" => "Обычное меню Windows вместо Start11",
-        "Image" => "Картинка кнопки «Пуск»",
-        "EnableS11Taskbar" => "Панель задач Start11",
-        "TaskbarOnTop" => "Панель задач сверху",
-        "SecondaryTaskbarOnTop" => "Сверху и на втором мониторе",
-        "TaskbarDisallowBlur" => "Запретить размытие панели",
-        "TaskbarAlphaValue" => "Прозрачность панели, %",
-        "CustomColourTaskbar" => "Свой цвет панели",
-        "CustomColourTaskbarV" => "Свой цвет панели — значение",
-        "S11_TaskbarTextColour" => "Цвет текста на панели",
-        "S11_TaskbarFocusColour" => "Цвет активного элемента панели",
-        "TaskbarBorderColour" => "Цвет рамки панели",
-        "S11_VerticalTBModePrimary" => "Вертикальная панель на основном экране",
-        "S11_VerticalTBModeSecondary" => "Вертикальная панель на втором экране",
-        "HorzAlignS11Taskbar" => "Выравнивание панели по горизонтали",
-        "AllowAlignMiddleStartInternal" => "Кнопки по центру",
-        "UseCortanaSearch" => "Веб-поиск Cortana",
-        "DisableCharms" => "Отключить панель Charms",
-        "Win7StyleSub" => "Отдельные настройки стиля Windows 7",
-        "ModernStyleSub" => "Отдельные настройки стиля Modern",
-        "Win12Width" => "Ширина меню Windows 11",
-        "Win12Height_3" => "Высота меню Windows 11",
-        other => other,
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            style: 3,
+            dark: true,
+            alpha: 242,
+            show_search: true,
+            tiles: true,
+        }
     }
 }
 
-fn group_of(key: &str) -> usize {
-    if key.contains("Taskbar") {
-        1
-    } else if key.contains("Search") {
-        3
-    } else if ["Right", "Tile", "Pins", "Icon", "Metro", "Folder"]
-        .iter()
-        .any(|p| key.contains(p))
-    {
-        2
-    } else if key.starts_with("S11_")
-        || [
-            "Menu", "Acrylic", "Custom", "Background", "UseFormica", "FullUI", "Texture",
-            "Skinned", "Darken",
-        ]
-        .iter()
-        .any(|p| key.starts_with(p))
-    {
-        0
+#[derive(Clone)]
+struct AppEntry {
+    name: String,
+    target: String,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Menu,
+    Settings,
+}
+
+struct Theme {
+    bg: egui::Color32,
+    text: egui::Color32,
+    muted: egui::Color32,
+    card: egui::Color32,
+    card_hi: egui::Color32,
+    accent: egui::Color32,
+}
+
+fn theme(dark: bool, alpha: u8) -> Theme {
+    // окно непрозрачное: прозрачность меню имитируем затемнением фона
+    let mix = |r: u8, g: u8, b: u8| {
+        let a = alpha as u32;
+        egui::Color32::from_rgb(
+            (r as u32 * a / 255) as u8,
+            (g as u32 * a / 255) as u8,
+            (b as u32 * a / 255) as u8,
+        )
+    };
+    if dark {
+        Theme {
+            bg: mix(0x1b, 0x1b, 0x1f),
+            text: egui::Color32::from_rgb(0xe6, 0xe6, 0xef),
+            muted: egui::Color32::from_rgb(0x8a, 0x8a, 0x99),
+            card: egui::Color32::from_rgb(0x2a, 0x2a, 0x33),
+            card_hi: egui::Color32::from_rgb(0x33, 0x33, 0x3d),
+            accent: ACCENT,
+        }
     } else {
-        4
+        Theme {
+            bg: mix(0xf7, 0xf7, 0xfa),
+            text: egui::Color32::from_rgb(0x1b, 0x1b, 0x1f),
+            muted: egui::Color32::from_rgb(0x6b, 0x6b, 0x78),
+            card: egui::Color32::from_rgb(0xe9, 0xe9, 0xf0),
+            card_hi: egui::Color32::from_rgb(0xdd, 0xdd, 0xe6),
+            accent: ACCENT_DARK,
+        }
     }
 }
 
-fn key(flags: u32) -> std::io::Result<RegKey> {
-    RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(SUBKEY, flags)
+fn config_path() -> PathBuf {
+    let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
+    PathBuf::from(base).join("OpenStart11").join("config.json")
 }
 
-fn read_all() -> BTreeMap<String, String> {
-    let mut out = BTreeMap::new();
-    if let Ok(k) = key(KEY_READ) {
-        for name in k.enum_values().flatten().map(|(n, _)| n) {
-            if let Ok(v) = k.get_value::<String, _>(&name) {
-                out.insert(name, v);
+fn load_config() -> Config {
+    std::fs::read_to_string(config_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn scan_apps() -> Vec<AppEntry> {
+    let mut map: BTreeMap<String, String> = BTreeMap::new();
+    let roots = [
+        std::env::var("APPDATA")
+            .ok()
+            .map(|p| PathBuf::from(p).join(r"Microsoft\Windows\Start Menu\Programs")),
+        Some(PathBuf::from(
+            r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs",
+        )),
+    ];
+    for root in roots.into_iter().flatten() {
+        walk(&root, &mut map);
+    }
+    map.entry("Проводник".into())
+        .or_insert("explorer.exe".into());
+    map.entry("Параметры".into()).or_insert("ms-settings:".into());
+    map.into_iter()
+        .map(|(name, target)| AppEntry { name, target })
+        .collect()
+}
+
+fn walk(dir: &Path, out: &mut BTreeMap<String, String>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            walk(&p, out);
+            continue;
+        }
+        if !p
+            .extension()
+            .map(|x| x.eq_ignore_ascii_case("lnk"))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let low = stem.to_lowercase();
+        if ["uninstall", "удал", "readme", "справка", "help"]
+            .iter()
+            .any(|w| low.contains(w))
+        {
+            continue;
+        }
+        out.entry(stem.to_string())
+            .or_insert(p.display().to_string());
+    }
+}
+
+fn launch_target(target: &str) {    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+    let op = wide("open");
+    let file = wide(target);
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+        );
+    }
+}
+
+fn autostart_enabled() -> bool {
+    std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            "OpenStart11",
+        ])
+        .creation_flags(0x08000000)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn set_autostart(on: bool) {
+    let mut cmd = std::process::Command::new("reg");
+    if on {
+        let exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        cmd.args([
+            "add",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            "OpenStart11",
+            "/t",
+            "REG_SZ",
+            "/d",
+            &exe,
+            "/f",
+        ]);
+    } else {
+        cmd.args([
+            "delete",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            "OpenStart11",
+            "/f",
+        ]);
+    }
+    let _ = cmd.creation_flags(0x08000000).output();
+}
+
+fn avatar_color(name: &str) -> egui::Color32 {
+    const PALETTE: &[egui::Color32] = &[
+        egui::Color32::from_rgb(0x5a, 0x6a, 0x9a),
+        egui::Color32::from_rgb(0x7a, 0x5a, 0x8a),
+        egui::Color32::from_rgb(0x8a, 0x6a, 0x4a),
+        egui::Color32::from_rgb(0x4a, 0x7a, 0x6a),
+        egui::Color32::from_rgb(0x8a, 0x5a, 0x5a),
+        egui::Color32::from_rgb(0x4f, 0x6f, 0x8f),
+    ];
+    let sum: u32 = name.bytes().map(|b| b as u32).sum();
+    PALETTE[sum as usize % PALETTE.len()]
+}
+
+fn letter(name: &str) -> String {
+    name.chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_default()
+}
+
+fn short(name: &str, limit: usize) -> String {
+    if name.chars().count() > limit {
+        format!("{}…", name.chars().take(limit - 1).collect::<String>())
+    } else {
+        name.to_string()
+    }
+}
+
+fn menu_size(style: usize) -> (f32, f32) {
+    match style {
+        0 => (430.0, 560.0),
+        1 => (480.0, 590.0),
+        2 => (520.0, 600.0),
+        3 => (660.0, 620.0),
+        _ => (640.0, 600.0),
+    }
+}
+
+fn monitor_size(ctx: &egui::Context) -> egui::Vec2 {
+    ctx.input(|i| i.viewport().monitor_size)
+        .unwrap_or(egui::vec2(1920.0, 1080.0))
+}
+
+/// Вывести окно поверх всех и забрать фокус: без этого меню закрывается сразу.
+fn force_foreground() {
+    let title: Vec<u16> = "OpenStart11\0".encode_utf16().collect();
+    unsafe {
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        if hwnd.is_null() {
+            return;
+        }
+        SetWindowPos(
+            hwnd,
+            windows_sys::Win32::UI::WindowsAndMessaging::HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
+                | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOSIZE
+                | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
+        );
+        let fg = GetForegroundWindow();
+        let tid_fg = GetWindowThreadProcessId(fg, std::ptr::null_mut());
+        let tid_me = GetCurrentThreadId();
+        let attached = AttachThreadInput(tid_me, tid_fg, 1);
+        SetForegroundWindow(hwnd);
+        if attached != 0 {
+            AttachThreadInput(tid_me, tid_fg, 0);
+        }
+    }
+}
+
+// ---------- перехват клавиши Win ----------
+
+static TOGGLE: AtomicBool = AtomicBool::new(false);
+static WIN_DOWN: AtomicBool = AtomicBool::new(false);
+static CHORD: AtomicBool = AtomicBool::new(false);
+static WIN_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn start_hook(ctx: egui::Context) {
+    // Хук не должен трогать egui: если обработчик задержится, Windows снимет хук.
+    // Отдельный поток замечает флаг и будит окно.
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if TOGGLE.load(Ordering::SeqCst) {
+                ctx.request_repaint();
             }
         }
-    }
-    out
+    });
+    std::thread::spawn(|| unsafe {
+        let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_proc), std::ptr::null_mut(), 0);
+        if hook.is_null() {
+            return;
+        }
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
+        UnhookWindowsHookEx(hook);
+    });
 }
 
-fn backup_dir() -> std::path::PathBuf {
-    let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into());
-    std::path::PathBuf::from(base).join("Start11Tuner")
-}
+unsafe extern "system" fn kb_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 && lparam != 0 {
+        let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
+        // своё синтетическое нажатие (Win для сочетаний) пропускаем без обработки
+        if kb.dwExtraInfo == 1 {
+            return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
+        }
+        let down = wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN;
+        let up = wparam as u32 == WM_KEYUP || wparam as u32 == WM_SYSKEYUP;
+        let win_key = kb.vkCode == VK_LWIN || kb.vkCode == VK_RWIN;
 
-fn save_backup() -> Option<String> {
-    let dir = backup_dir();
-    std::fs::create_dir_all(&dir).ok()?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-    let file = dir.join(format!("backup-{stamp}.json"));
-    let data = serde_json::to_vec_pretty(&read_all()).ok()?;
-    std::fs::write(&file, data).ok()?;
-    Some(file.display().to_string())
-}
-
-fn list_backups() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(backup_dir())
-        .map(|rd| {
-            rd.flatten()
-                .filter_map(|e| e.file_name().into_string().ok())
-                .filter(|n| n.starts_with("backup-") && n.ends_with(".json"))
-                .collect()
-        })
-        .unwrap_or_default();
-    names.sort();
-    names.reverse();
-    names
-}
-
-fn restore_backup(name: &str) -> usize {
-    let file = backup_dir().join(name);
-    let Ok(raw) = std::fs::read_to_string(file) else { return 0 };
-    let Ok(map) = serde_json::from_str::<BTreeMap<String, String>>(&raw) else { return 0 };
-    let Ok(k) = key(KEY_READ | KEY_WRITE) else { return 0 };
-    let mut n = 0;
-    for (name, value) in map {
-        if k.set_value(&name, &value).is_ok() {
-            n += 1;
+        if win_key && down {
+            if !WIN_DOWN.swap(true, Ordering::SeqCst) {
+                CHORD.store(false, Ordering::SeqCst);
+                *WIN_AT.lock().unwrap() = Some(Instant::now());
+            }
+            // нажатие Win глушим: иначе откроется родное меню Windows
+            return 1;
+        }
+        if down && WIN_DOWN.load(Ordering::SeqCst) {
+            if !CHORD.swap(true, Ordering::SeqCst) {
+                // это сочетание Win+X: возвращаем системе «зажатый» Win
+                send_win_down();
+            }
+            return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
+        }
+        if win_key && up {
+            if !WIN_DOWN.swap(false, Ordering::SeqCst) {
+                return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
+            }
+            let tap = !CHORD.load(Ordering::SeqCst)
+                && WIN_AT
+                    .lock()
+                    .unwrap()
+                    .map(|t| t.elapsed().as_millis() < 700)
+                    .unwrap_or(false);
+            if tap {
+                TOGGLE.store(true, Ordering::SeqCst);
+            }
+            return 1;
         }
     }
-    n
+    CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
 }
 
+/// Синтетическое нажатие Win, чтобы сочетания вроде Win+E продолжали работать.
+unsafe fn send_win_down() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT,
+    };
+    let mut input: INPUT = std::mem::zeroed();
+    input.r#type = INPUT_KEYBOARD;
+    input.Anonymous.ki = KEYBDINPUT {
+        wVk: VK_LWIN as u16,
+        wScan: 0,
+        dwFlags: 0,
+        time: 0,
+        dwExtraInfo: 1,
+    };
+    SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+}
+
+// ---------- приложение ----------
+
 struct App {
-    groups: [Vec<Row>; 5],
-    orig: BTreeMap<String, String>,
-    no_start11: bool,
-    style: usize,
-    style_dirty: bool,
-    section: usize,
-    status: String,
-    backups: Vec<String>,
-    selected_backup: usize,
+    cfg: Config,
+    apps: Vec<AppEntry>,
+    query: String,
+    mode: Mode,
+    visible: bool,
+    opened_at: Instant,
+    focus_search: bool,
+    was_focused: bool,
+    autostart: bool,
+    page: usize,
+    quit: bool,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut fonts = egui::FontDefinitions::default();
         if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\segoeui.ttf") {
-            fonts
-                .font_data
-                .insert("segoe".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+            fonts.font_data.insert(
+                "segoe".into(),
+                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            );
             for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
                 if let Some(list) = fonts.families.get_mut(&family) {
                     list.insert(0, "segoe".into());
@@ -245,140 +431,404 @@ impl App {
         }
         cc.egui_ctx.set_fonts(fonts);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        start_hook(cc.egui_ctx.clone());
 
-        let vals = read_all();
-        let no_start11 = key(KEY_READ).is_err();
-        let mut groups: [Vec<Row>; 5] = Default::default();
-        for (name, raw) in &vals {
-            if SKIP.contains(&name.as_str()) {
-                continue;
-            }
-            let kind = if raw == "0" || raw == "1" {
-                Kind::Bool(raw == "1")
-            } else if raw.len() <= 4 && raw.chars().all(|c| c.is_ascii_digit()) {
-                Kind::Int(raw.parse().unwrap_or(0))
-            } else {
-                Kind::Text(raw.clone())
-            };
-            groups[group_of(name)].push(Row {
-                key: name.clone(),
-                label: label_of(name).to_string(),
-                kind,
-            });
-        }
-
-        let mut app = App {
-            groups,
-            orig: vals,
-            no_start11,
-            style: 0,
-            style_dirty: false,
-            section: 0,
-            status: String::new(),
-            backups: list_backups(),
-            selected_backup: 0,
+        let app = App {
+            cfg: load_config(),
+            apps: scan_apps(),
+            query: String::new(),
+            mode: Mode::Settings,
+            visible: true,
+            opened_at: Instant::now(),
+            focus_search: false,
+            was_focused: false,
+            autostart: autostart_enabled(),
+            page: 0,
+            quit: false,
         };
-
-        if let Some(mode) = app.orig.get("MenuMode").and_then(|v| v.parse::<usize>().ok()) {
-            if (1..=5).contains(&mode) {
-                app.style = mode - 1;
-            }
-        }
-
-        if no_start11 {
-            app.status = format!("Start11 не найден: HKCU\\{SUBKEY} — менять нечего.");
-            return app;
-        }
-
-        let running = std::process::Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq Start11_64.exe", "/NH"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("Start11_64"))
-            .unwrap_or(false);
-
-        app.status = "Смена стиля между Windows 10 и Windows 11 требует перезагрузки.".to_string();
-        if running {
-            app.status.push_str(
-                "\nStart11 запущен — он перезапишет значения при выходе. Сначала выключи его меню.",
-            );
-        }
+        app.center_settings(&cc.egui_ctx);
         app
     }
 
-    fn apply(&mut self) {
-        let mut changes: Vec<(String, String)> = Vec::new();
-        let mode = (self.style + 1).to_string();
-        if self.style_dirty && self.orig.get("MenuMode") != Some(&mode) {
-            changes.push(("MenuMode".into(), mode));
+    fn save(&self) {
+        if let Some(dir) = config_path().parent() {
+            let _ = std::fs::create_dir_all(dir);
         }
-        for rows in &self.groups {
-            for row in rows {
-                let v = match &row.kind {
-                    Kind::Bool(b) => (if *b { "1" } else { "0" }).to_string(),
-                    Kind::Int(i) => i.to_string(),
-                    Kind::Text(s) => s.clone(),
-                };
-                if self.orig.get(&row.key) != Some(&v) {
-                    changes.push((row.key.clone(), v));
-                }
-            }
+        if let Ok(text) = serde_json::to_string_pretty(&self.cfg) {
+            let _ = std::fs::write(config_path(), text);
         }
-        if changes.is_empty() {
-            self.status = "Изменений нет — писать нечего.".into();
-            return;
-        }
-
-        let backup = save_backup();
-        let Ok(k) = key(KEY_READ | KEY_WRITE) else {
-            self.status = "Не удалось открыть ключ Start11 для записи.".into();
-            return;
-        };
-        let mut written = 0;
-        for (name, v) in &changes {
-            if k.set_value(name, v).is_ok() {
-                written += 1;
-            }
-        }
-
-        let stop_note = match std::process::Command::new("taskkill")
-            .args(["/F", "/IM", "Start11_64.exe"])
-            .output()
-        {
-            Ok(o) if o.status.success() => "",
-            _ => " Start11 закрыть не удалось — он может вернуть старые значения.",
-        };
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/IM", "explorer.exe"])
-            .output();
-        std::thread::sleep(std::time::Duration::from_secs(3));
-        let _ = std::process::Command::new("explorer.exe").spawn();
-        std::thread::sleep(std::time::Duration::from_secs(4));
-
-        let _ = std::fs::write(
-            backup_dir().join("last-apply.txt"),
-            format!(
-                "wrote={written} backup={}{stop_note}",
-                backup.unwrap_or_else(|| "нет".into())
-            ),
-        );
-        std::process::exit(0);
     }
 
-    fn cards(&mut self, ui: &mut egui::Ui) {
+    fn center_settings(&self, ctx: &egui::Context) {
+        let m = monitor_size(ctx);
+        let size = egui::vec2(1000.0, 640.0);
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            (m.x - size.x) / 2.0,
+            (m.y - size.y) / 2.0 - 20.0,
+        )));
+    }
+
+    fn show_menu(&mut self, ctx: &egui::Context) {
+        self.mode = Mode::Menu;
+        self.visible = true;
+        self.opened_at = Instant::now();
+        self.focus_search = self.cfg.show_search;
+        self.was_focused = false;
+        self.query.clear();
+        let (w, h) = menu_size(self.cfg.style);
+        let m = monitor_size(ctx);
+        let x = if self.cfg.style >= 3 {
+            (m.x - w) / 2.0
+        } else {
+            12.0
+        };
+        let y = (m.y - h - 56.0).max(8.0);
+        use egui::ViewportCommand as V;
+        for cmd in [
+            V::Decorations(false),
+            V::WindowLevel(egui::WindowLevel::AlwaysOnTop),
+            V::InnerSize(egui::vec2(w, h)),
+            V::OuterPosition(egui::pos2(x, y)),
+            V::Visible(true),
+            V::Focus,
+        ] {
+            ctx.send_viewport_cmd(cmd);
+        }
+        ctx.request_repaint();
+    }
+
+    fn show_settings(&mut self, ctx: &egui::Context) {
+        self.mode = Mode::Settings;
+        self.visible = true;
+        self.center_settings(ctx);
+        use egui::ViewportCommand as V;
+        for cmd in [
+            V::Decorations(true),
+            V::WindowLevel(egui::WindowLevel::Normal),
+            V::Visible(true),
+            V::Focus,
+        ] {
+            ctx.send_viewport_cmd(cmd);
+        }
+        ctx.request_repaint();
+    }
+
+    fn hide(&mut self, ctx: &egui::Context) {
+        self.visible = false;
+        // не Visible(false): скрытое окно нельзя вывести на передний план по Win.
+        // Уводим за край экрана и оставляем показанным.
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            -10000.0, -10000.0,
+        )));
+    }
+
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.quit = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    fn menu_ui(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
+        if focused {
+            self.was_focused = true;
+        } else if !self.was_focused && self.opened_at.elapsed().as_millis() < 900 {
+            // окно уже показано — теперь можно по-настоящему забрать фокус
+            force_foreground();
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        if self.was_focused && !focused && self.opened_at.elapsed().as_millis() > 400 {
+            self.hide(ctx);
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.hide(ctx);
+            return;
+        }
+
+        let style = self.cfg.style;
+        let t = theme(self.cfg.dark, self.cfg.alpha);
+        let margin = if style <= 2 { 10 } else { 16 };
+
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::NONE
+                    .fill(t.bg)
+                    .stroke(egui::Stroke::new(1.0, t.card_hi))
+                    .inner_margin(egui::Margin::same(margin)),
+            )
+            .show(ctx, |ui| {
+                if style <= 2 {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("OpenStart11")
+                                .color(t.accent)
+                                .size(15.0)
+                                .strong(),
+                        );
+                    });
+                    ui.add_space(6.0);
+                }
+
+                if self.cfg.show_search {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.query)
+                            .hint_text("Поиск")
+                            .desired_width(f32::INFINITY),
+                    );
+                    if self.focus_search {
+                        resp.request_focus();
+                        self.focus_search = false;
+                    }
+                    ui.add_space(8.0);
+                }
+
+                let q = self.query.trim().to_lowercase();
+                let list: Vec<(String, String)> = self
+                    .apps
+                    .iter()
+                    .filter(|a| q.is_empty() || a.name.to_lowercase().contains(&q))
+                    .map(|a| (a.name.clone(), a.target.clone()))
+                    .collect();
+
+                let mut launch: Option<String> = None;
+
+                if q.is_empty() && self.cfg.tiles {
+                    let cols = ((ui.available_width() + 8.0) / 94.0).floor().max(3.0) as usize;
+                    let take = (cols * 2).min(list.len());
+                    ui.horizontal_wrapped(|ui| {
+                        for (name, target) in list.iter().take(take) {
+                            if tile(ui, name, &t).clicked() {
+                                launch = Some(target.clone());
+                            }
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("Все приложения")
+                            .color(t.muted)
+                            .size(12.0),
+                    );
+                }
+
+                let rest_h = (ui.available_height() - 46.0).max(80.0);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .max_height(rest_h)
+                    .show(ui, |ui| {
+                        for (name, target) in &list {
+                            if row(ui, name, &t).clicked() {
+                                launch = Some(target.clone());
+                            }
+                        }
+                    });
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Настройки").clicked() {
+                        self.show_settings(ctx);
+                    }
+                });
+
+                if let Some(target) = launch {
+                    launch_target(&target);
+                    self.hide(ctx);
+                }            });
+    }
+
+    fn settings_ui(&mut self, ctx: &egui::Context) {
+        let mut changed = false;
+        egui::SidePanel::left("nav")
+            .exact_width(228.0)
+            .resizable(false)
+            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(0x15, 0x15, 0x1a)))
+            .show(ctx, |ui| {
+                ui.add_space(24.0);
+                for (i, name) in NAV.iter().enumerate() {
+                    let selected = self.page == i;
+                    let resp = ui.add_sized(
+                        [228.0, 40.0],
+                        egui::SelectableLabel::new(
+                            selected,
+                            egui::RichText::new(*name).color(if selected {
+                                egui::Color32::from_rgb(0xe6, 0xe6, 0xef)
+                            } else {
+                                egui::Color32::from_rgb(0x8a, 0x8a, 0x99)
+                            }),
+                        ),
+                    );
+                    if resp.clicked() {
+                        self.page = i;
+                    }
+                }
+            });
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(0x1b, 0x1b, 0x1f)).inner_margin(
+                egui::Margin {
+                    left: 24,
+                    right: 24,
+                    top: 20,
+                    bottom: 0,
+                },
+            ))
+            .show(ctx, |ui| match self.page {
+                0 => {
+                    ui.label(
+                        egui::RichText::new("Меню «Пуск»")
+                            .size(24.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xe6, 0xe6, 0xef)),
+                    );
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new("Стиль меню«Пуск»")
+                            .color(egui::Color32::from_rgb(0x8a, 0x8a, 0x99)),
+                    );
+                    ui.add_space(6.0);
+                    if self.cards(ui) {
+                        changed = true;
+                    }
+                    ui.add_space(14.0);
+                    ui.label(
+                        egui::RichText::new("Поведение и оформление")
+                            .color(egui::Color32::from_rgb(0x8a, 0x8a, 0x99)),
+                    );
+                    ui.add_space(6.0);
+                    let mut dark = self.cfg.dark;
+                    if ui.checkbox(&mut dark, "Тёмное меню").changed() {
+                        self.cfg.dark = dark;
+                        changed = true;
+                    }
+                    let mut search = self.cfg.show_search;
+                    if ui.checkbox(&mut search, "Показывать поиск").changed() {
+                        self.cfg.show_search = search;
+                        changed = true;
+                    }
+                    let mut tiles = self.cfg.tiles;
+                    if ui
+                        .checkbox(&mut tiles, "Плитки закреплённых сверху")
+                        .changed()
+                    {
+                        self.cfg.tiles = tiles;
+                        changed = true;
+                    }
+                    let mut alpha = self.cfg.alpha as i32;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut alpha, 80..=255)
+                                .text("Непрозрачность меню"),
+                        )
+                        .changed()
+                    {
+                        self.cfg.alpha = alpha as u8;
+                        changed = true;
+                    }
+                    ui.add_space(12.0);
+                    if ui.button("Показать меню").clicked() {
+                        self.show_menu(ctx);
+                    }
+                }
+                1 => {
+                    ui.label(
+                        egui::RichText::new("Управление")
+                            .size(24.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xe6, 0xe6, 0xef)),
+                    );
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Найдено программ: {}. Настройки: {}",
+                            self.apps.len(),
+                            config_path().display()
+                        ))
+                        .color(egui::Color32::from_rgb(0x8a, 0x8a, 0x99)),
+                    );
+                    ui.add_space(10.0);
+                    let mut auto = self.autostart;
+                    if ui
+                        .checkbox(&mut auto, "Запускать при входе в Windows")
+                        .changed()
+                    {
+                        self.autostart = auto;
+                        set_autostart(auto);
+                    }
+                    if ui.button("Пересканировать программы").clicked() {
+                        self.apps = scan_apps();
+                    }
+                    if ui.button("Открыть папку настроек").clicked() {
+                        if let Some(dir) = config_path().parent() {
+                            let _ = std::process::Command::new("explorer.exe").arg(dir).spawn();
+                        }
+                    }
+                    if ui.button("Сбросить настройки").clicked() {
+                        self.cfg = Config::default();
+                        changed = true;
+                    }
+                    ui.add_space(10.0);
+                    if ui.button("Выход").clicked() {
+                        self.quit(ctx);
+                    }
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Меню открывается по клавише Win. Настройки Start11 больше не нужны: \
+                             всё хранится в собственном файле, реестр не трогается.",
+                        )
+                        .color(egui::Color32::from_rgb(0x8a, 0x8a, 0x99)),
+                    );
+                }
+                _ => {
+                    ui.label(
+                        egui::RichText::new("OpenStart11")
+                            .size(24.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(0xe6, 0xe6, 0xef)),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Самостоятельное меню «Пуск»: свой перехват Win, свои стили, свой список \
+                             программ. Start11 не нужен и не используется.\n\n\
+                             Программы берутся из ярлыков меню «Пуск» Windows \
+                             (общая и пользовательская папки).\n\n\
+                             Пять стилей: Windows 7, Modern, Windows 10, Windows 11, Windows App. \
+                             Меню открывается по Win, закрывается по Esc, клику мимо или запуску \
+                             программы.\n\n\
+                             Чего пока нет: замены панели задач, UWP-программ без ярлыков, \
+                             закреплённых вручную и иконок из exe (вместо них буквы).",
+                        )
+                        .color(egui::Color32::from_rgb(0x8a, 0x8a, 0x99)),
+                    );
+                }
+            });
+
+        if changed {
+            self.save();
+        }
+    }
+
+    fn cards(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
         ui.horizontal(|ui| {
             for (i, (name, desc)) in STYLES.iter().enumerate() {
                 let (rect, resp) =
-                    ui.allocate_exact_size(egui::vec2(140.0, 226.0), egui::Sense::click());
+                    ui.allocate_exact_size(egui::vec2(136.0, 216.0), egui::Sense::click());
                 if resp.clicked() {
-                    self.style = i;
-                    self.style_dirty = true;
+                    self.cfg.style = i;
+                    changed = true;
                 }
-                let selected = self.style == i;
+                let selected = self.cfg.style == i;
                 let painter = ui.painter();
                 painter.rect_filled(
                     rect,
                     egui::CornerRadius::same(8),
-                    if selected { CARD_HI } else { CARD },
+                    if selected {
+                        egui::Color32::from_rgb(0x33, 0x33, 0x3d)
+                    } else {
+                        egui::Color32::from_rgb(0x2a, 0x2a, 0x33)
+                    },
                 );
                 if selected {
                     painter.rect_stroke(
@@ -391,7 +841,7 @@ impl App {
 
                 let preview = egui::Rect::from_min_size(
                     rect.min + egui::vec2(14.0, 14.0),
-                    egui::vec2(rect.width() - 28.0, 106.0),
+                    egui::vec2(rect.width() - 28.0, 100.0),
                 );
                 painter.rect_filled(
                     preview,
@@ -403,261 +853,150 @@ impl App {
                 let p = preview.min;
                 match i {
                     0 => {
-                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(6.0, 16.0), egui::vec2(46.0, 22.0)), 2.0, ink);
-                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(58.0, 16.0), egui::vec2(46.0, 74.0)), 2.0, ink);
-                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(6.0, 44.0), egui::vec2(46.0, 46.0)), 2.0, ink);
+                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(6.0, 14.0), egui::vec2(44.0, 20.0)), 2.0, ink);
+                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(56.0, 14.0), egui::vec2(44.0, 72.0)), 2.0, ink);
+                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(6.0, 40.0), egui::vec2(44.0, 46.0)), 2.0, ink);
                     }
                     1 => {
-                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(6.0, 12.0), egui::vec2(98.0, 10.0)), 2.0, ink);
-                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(6.0, 28.0), egui::vec2(62.0, 66.0)), 2.0, ink);
-                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(74.0, 28.0), egui::vec2(30.0, 66.0)), 2.0, ink);
+                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(6.0, 10.0), egui::vec2(96.0, 10.0)), 2.0, ink);
+                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(6.0, 26.0), egui::vec2(60.0, 64.0)), 2.0, ink);
+                        painter.rect_filled(egui::Rect::from_min_size(p + egui::vec2(72.0, 26.0), egui::vec2(30.0, 64.0)), 2.0, ink);
                     }
                     2 => {
                         for r in 0..2 {
                             for c in 0..4 {
-                                let pos = p + egui::vec2(6.0 + c as f32 * 26.0, 16.0 + r as f32 * 28.0);
-                                painter.rect_filled(egui::Rect::from_min_size(pos, egui::vec2(22.0, 22.0)), 2.0, ink);
+                                let pos = p + egui::vec2(6.0 + c as f32 * 25.0, 14.0 + r as f32 * 26.0);
+                                painter.rect_filled(egui::Rect::from_min_size(pos, egui::vec2(21.0, 21.0)), 2.0, ink);
                             }
                         }
                     }
                     3 => {
                         for r in 0..3 {
                             for c in 0..5 {
-                                let pos = p + egui::vec2(8.0 + c as f32 * 20.0, 18.0 + r as f32 * 24.0);
-                                painter.rect_filled(egui::Rect::from_min_size(pos, egui::vec2(16.0, 18.0)), 2.0, ink);
+                                let pos = p + egui::vec2(8.0 + c as f32 * 19.0, 16.0 + r as f32 * 22.0);
+                                painter.rect_filled(egui::Rect::from_min_size(pos, egui::vec2(15.0, 17.0)), 2.0, ink);
                             }
                         }
                     }
                     _ => {
                         for r in 0..4 {
-                            let pos = p + egui::vec2(8.0, 16.0 + r as f32 * 14.0);
-                            painter.rect_filled(egui::Rect::from_min_size(pos, egui::vec2(96.0, 8.0)), 2.0, ink);
+                            let pos = p + egui::vec2(8.0, 14.0 + r as f32 * 14.0);
+                            painter.rect_filled(egui::Rect::from_min_size(pos, egui::vec2(94.0, 8.0)), 2.0, ink);
                         }
                     }
                 }
 
                 painter.text(
-                    rect.min + egui::vec2(12.0, 132.0),
+                    rect.min + egui::vec2(12.0, 126.0),
                     egui::Align2::LEFT_TOP,
                     *name,
                     egui::FontId::proportional(13.0),
-                    if selected { ACCENT } else { TEXT },
+                    if selected { ACCENT } else { egui::Color32::from_rgb(0xe6, 0xe6, 0xef) },
                 );
                 painter.text(
-                    rect.min + egui::vec2(12.0, 178.0),
+                    rect.min + egui::vec2(12.0, 170.0),
                     egui::Align2::LEFT_TOP,
                     *desc,
                     egui::FontId::proportional(11.0),
-                    MUTED,
+                    egui::Color32::from_rgb(0x8a, 0x8a, 0x99),
                 );
             }
         });
+        changed
     }
+}
 
-    fn rows(&mut self, ui: &mut egui::Ui) {
-        if self.no_start11 {
-            ui.label(
-                egui::RichText::new(
-                    "Start11 не установлен или ещё ни разу не запускался.\n\
-                     Нет ключа HKCU\\Software\\Stardock\\Start8\\Start8.ini\\Start8 — \
-                     настраивать нечего.",
-                )
-                .color(MUTED),
-            );
-            return;
-        }
-        let rows = &mut self.groups[self.section];
-        if rows.is_empty() {
-            ui.label(
-                egui::RichText::new("Start11 ещё не записывал ключи для этого раздела.")
-                    .color(MUTED),
-            );
-            return;
-        }
-        egui::ScrollArea::vertical()
-            .id_salt(self.section)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                egui::Grid::new("rows")
-                    .num_columns(2)
-                    .spacing([16.0, 8.0])
-                    .show(ui, |ui| {
-                        for row in rows {
-                            ui.label(row.label.clone()).on_hover_text(&row.key);
-                            match &mut row.kind {
-                                Kind::Bool(v) => {
-                                    ui.add(egui::Checkbox::without_text(v))
-                                        .on_hover_text(&row.key);
-                                }
-                                Kind::Int(v) => {
-                                    ui.add(egui::DragValue::new(v).range(0..=9999));
-                                }
-                                Kind::Text(s) => {
-                                    ui.add(egui::TextEdit::singleline(s).desired_width(360.0));
-                                }
-                            }
-                            ui.end_row();
-                        }
-                    });
-            });
+fn tile(ui: &mut egui::Ui, name: &str, t: &Theme) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(86.0, 100.0), egui::Sense::click());
+    let painter = ui.painter().with_clip_rect(rect);
+    if resp.hovered() {
+        painter.rect_filled(rect, egui::CornerRadius::same(6), t.card_hi);
     }
+    let icon = egui::Rect::from_min_size(
+        rect.min + egui::vec2(23.0, 10.0),
+        egui::vec2(40.0, 40.0),
+    );
+    painter.rect_filled(icon, egui::CornerRadius::same(8), avatar_color(name));
+    painter.text(
+        icon.center(),
+        egui::Align2::CENTER_CENTER,
+        letter(name),
+        egui::FontId::proportional(18.0),
+        egui::Color32::WHITE,
+    );
+    painter.text(
+        egui::pos2(rect.center().x, rect.max.y - 32.0),
+        egui::Align2::CENTER_TOP,
+        short(name, 11),
+        egui::FontId::proportional(11.0),
+        t.text,
+    );
+    resp
+}
 
-    fn manage(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Бэкапы").color(MUTED));
-        let names = self.backups.clone();
-        egui::ComboBox::from_id_salt("backups")
-            .width(320.0)
-            .selected_text(
-                names
-                    .get(self.selected_backup)
-                    .cloned()
-                    .unwrap_or_else(|| "нет бэкапов".into()),
-            )
-            .show_ui(ui, |ui| {
-                for (i, n) in names.iter().enumerate() {
-                    ui.selectable_value(&mut self.selected_backup, i, n);
-                }
-            });
-        if ui.button("Восстановить выбранный").clicked() {
-            if let Some(name) = self.backups.get(self.selected_backup) {
-                let n = restore_backup(name);
-                self.status = format!("Восстановлено значений: {n} из {name}. Нужна перезагрузка.");
-            } else {
-                self.status = "Бэкапов пока нет.".into();
-            }
-        }
-        if ui.button("Открыть папку бэкапов").clicked() {
-            let _ = std::process::Command::new("explorer.exe")
-                .arg(backup_dir())
-                .spawn();
-        }
-        if ui.button("Открыть настройки Start11").clicked() {
-            let _ = std::process::Command::new(CONFIG_EXE).spawn();
-        }
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new(
-                "Перед применением выключи меню Start11: работающий процесс перезаписывает настройки при выходе.",
-            )
-            .color(MUTED),
-        );
+fn row(ui: &mut egui::Ui, name: &str, t: &Theme) -> egui::Response {
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
+    let painter = ui.painter().with_clip_rect(rect);
+    if resp.hovered() {
+        painter.rect_filled(rect, egui::CornerRadius::same(4), t.card_hi);
     }
+    let icon = egui::Rect::from_min_size(
+        rect.min + egui::vec2(4.0, 4.0),
+        egui::vec2(22.0, 22.0),
+    );
+    painter.rect_filled(icon, egui::CornerRadius::same(5), avatar_color(name));
+    painter.text(
+        icon.center(),
+        egui::Align2::CENTER_CENTER,
+        letter(name),
+        egui::FontId::proportional(11.0),
+        egui::Color32::WHITE,
+    );
+    painter.text(
+        egui::pos2(rect.min.x + 34.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        short(name, 30),
+        egui::FontId::proportional(13.0),
+        t.text,
+    );
+    resp
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::SidePanel::left("nav")
-            .exact_width(230.0)
-            .resizable(false)
-            .frame(egui::Frame::NONE.fill(SIDE))
-            .show(ctx, |ui| {
-                ui.add_space(24.0);
-                for (i, name) in NAV.iter().enumerate() {
-                    let selected = self.section == i;
-                    let resp = ui.add_sized(
-                        [230.0, 40.0],
-                        egui::SelectableLabel::new(
-                            selected,
-                            egui::RichText::new(*name).color(if selected { TEXT } else { MUTED }),
-                        ),
-                    );
-                    if resp.clicked() {
-                        self.section = i;
-                    }
-                }
-            });
+        if TOGGLE.swap(false, Ordering::SeqCst) {
+            if self.visible && self.mode == Mode::Menu {
+                self.hide(ctx);
+            } else {
+                self.show_menu(ctx);
+            }
+        }
 
-        egui::TopBottomPanel::bottom("footer")
-            .exact_height(80.0)
-            .frame(egui::Frame::NONE.fill(BG))
-            .show(ctx, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(24.0);
-                    ui.label(egui::RichText::new(&self.status).color(MUTED).size(12.0));
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(24.0);
-                    let apply = egui::Button::new(egui::RichText::new("Применить").color(BG))
-                        .fill(ACCENT)
-                        .min_size(egui::vec2(160.0, 34.0));
-                    if ui.add_enabled(!self.no_start11, apply).clicked() {
-                        self.apply();
-                    }
-                    let revert = egui::Button::new(egui::RichText::new("Откатить").color(TEXT))
-                        .fill(CARD)
-                        .min_size(egui::vec2(160.0, 34.0));
-                    if ui.add(revert).clicked() {
-                        if let Some(name) = self.backups.first().cloned() {
-                            let n = restore_backup(&name);
-                            self.status =
-                                format!("Откат из {name}: {n} значений. Перезагрузись, чтобы применилось.");
-                        } else {
-                            self.status = "Бэкапов пока нет.".into();
-                        }
-                    }
-                });
-            });
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.quit {
+                return;
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.hide(ctx);
+            return;
+        }
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(BG).inner_margin(egui::Margin {
-                left: 24,
-                right: 24,
-                top: 20,
-                bottom: 0,
-            }))
-            .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(NAV[self.section])
-                        .size(24.0)
-                        .strong()
-                        .color(TEXT),
-                );
-                ui.add_space(10.0);
-                match self.section {
-                    0..=4 => {
-                        if self.section == 0 {
-                            ui.label(egui::RichText::new("Стиль меню «Пуск»").color(MUTED));
-                            ui.add_space(6.0);
-                            self.cards(ui);
-                            ui.add_space(12.0);
-                        }
-                        self.rows(ui);
-                    }
-                    5 => self.manage(ui),
-                    _ => {
-                        ui.label(
-                            egui::RichText::new("OpenStart11")
-                                .size(16.0)
-                                .color(TEXT),
-                        );
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "Отдельный редактор настроек Start11. Собран на Rust, \
-                                 зависимостей и внешних скриптов нет.\n\n\
-                                 Ключ: HKCU\\Software\\Stardock\\Start8\\Start8.ini\\Start8\n\
-                                 Значения хранятся строками, булевы — \"0\"/\"1\".\n\n\
-                                 Пишутся только изменённые значения. Перед записью — бэкап \
-                                 в %LOCALAPPDATA%\\Start11Tuner.\n\
-                                 «Применить» перезапускает explorer и закрывает окно; \
-                                 перезагрузка нужна только при смене стиля 10 ↔ 11.\n\n\
-                                 Не делает: активацию и обход лицензии, редактор закреплённых.",
-                            )
-                            .color(MUTED),
-                        );
-                    }
-                }
-            });
+        if self.visible {
+            match self.mode {
+                Mode::Menu => self.menu_ui(ctx),
+                Mode::Settings => self.settings_ui(ctx),
+            }
+        }
     }
 }
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1040.0, 660.0])
-            .with_resizable(false),
+            .with_inner_size([1000.0, 640.0])
+            .with_resizable(false)
+            .with_title("OpenStart11"),
         ..Default::default()
     };
     eframe::run_native(
