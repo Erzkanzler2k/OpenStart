@@ -892,6 +892,11 @@ struct App {
     power_open: bool,
     was_minimized: bool,
     setting_filter: String,
+    /// Выбранная строка в результатах поиска.
+    sel: usize,
+    sel_query: String,
+    /// Enter нажат в поле поиска — запустить выбранное.
+    enter: bool,
     backdrop: Option<egui::TextureHandle>,
     page: usize,
     quit: bool,
@@ -949,6 +954,9 @@ impl App {
             power_open: false,
             was_minimized: false,
             setting_filter: String::new(),
+            sel: 0,
+            sel_query: String::new(),
+            enter: false,
             backdrop: None,
             page: 0,
             quit: false,
@@ -1087,13 +1095,7 @@ impl App {
         }
 
         let q = self.query.trim().to_lowercase();
-        let matching: Vec<usize> = self
-            .apps
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| q.is_empty() || a.name.to_lowercase().contains(&q))
-            .map(|(i, _)| i)
-            .collect();
+        let matching = self.matching();
 
         if !q.is_empty() {
             egui::ScrollArea::vertical()
@@ -1101,8 +1103,9 @@ impl App {
                 .auto_shrink([false, false])
                 .max_height((ui.available_height() - 8.0).max(80.0))
                 .show(ui, |ui| {
-                    for &idx in &matching {
-                        if row(ui, &self.apps[idx], t).clicked() {
+                    for (n, &idx) in matching.iter().enumerate() {
+                        let chosen = !q.is_empty() && n == self.sel;
+                        if row_sel(ui, &self.apps[idx], t, chosen).clicked() {
                             launch = Some(self.apps[idx].target.clone());
                         }
                     }
@@ -1252,17 +1255,48 @@ impl App {
                 r.request_focus();
                 self.focus_search = false;
             }
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.enter = true;
+            }
         }
     }
 
+    /// Совпадения поиска: сначала название с этого слова, потом по слову, потом подстрока.
     fn matching(&self) -> Vec<usize> {
         let q = self.query.trim().to_lowercase();
-        self.apps
+        if q.is_empty() {
+            return (0..self.apps.len()).collect();
+        }
+        let mut scored: Vec<(u8, usize)> = self
+            .apps
             .iter()
             .enumerate()
-            .filter(|(_, a)| q.is_empty() || a.name.to_lowercase().contains(&q))
-            .map(|(i, _)| i)
-            .collect()
+            .filter_map(|(i, a)| {
+                let name = a.name.to_lowercase();
+                let score = if name.starts_with(&q) {
+                    0
+                } else if name
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| !w.is_empty() && w.starts_with(&q))
+                {
+                    1
+                } else if name.contains(&q) {
+                    2
+                } else {
+                    return None;
+                };
+                Some((score, i))
+            })
+            .collect();
+        scored.sort_by(|a, b| {
+            a.0.cmp(&b.0).then_with(|| {
+                self.apps[a.1]
+                    .name
+                    .to_lowercase()
+                    .cmp(&self.apps[b.1].name.to_lowercase())
+            })
+        });
+        scored.into_iter().map(|(_, i)| i).collect()
     }
 
     fn footer_bar(&mut self, ui: &mut egui::Ui, t: &Theme, user: &str, small: bool) -> bool {
@@ -1626,6 +1660,23 @@ impl App {
         let mut launch: Option<String> = None;
         let mut open_settings = false;
 
+        // клавиатура в результатах поиска: ↑/↓ выбор, Enter запуск
+        if self.query != self.sel_query {
+            self.sel = 0;
+            self.sel_query = self.query.clone();
+        }
+        if !self.query.trim().is_empty() {
+            let found = self.matching();
+            if !found.is_empty() {
+                if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                    self.sel = (self.sel + 1).min(found.len() - 1);
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                    self.sel = self.sel.saturating_sub(1);
+                }
+            }
+        }
+
         if let Some(tex) = &self.backdrop {
             let full = ctx.screen_rect();
             ctx.layer_painter(egui::LayerId::background())
@@ -1811,6 +1862,16 @@ impl App {
 
                 if open_settings {
                     self.show_settings(ctx);
+                }
+                if self.enter {
+                    self.enter = false;
+                    if !self.query.trim().is_empty() {
+                        let found = self.matching();
+                        if !found.is_empty() {
+                            self.sel = self.sel.min(found.len() - 1);
+                            launch = Some(self.apps[found[self.sel]].target.clone());
+                        }
+                    }
                 }
                 if let Some(target) = launch {
                     self.remember(&target);
@@ -2861,13 +2922,29 @@ fn rec_row(ui: &mut egui::Ui, app: &AppEntry, t: &Theme) -> egui::Response {
 }
 
 fn row(ui: &mut egui::Ui, app: &AppEntry, t: &Theme) -> egui::Response {
-    row_w(ui, app, t, ui.available_width())
+    row_sel(ui, app, t, false)
+}
+
+fn row_sel(ui: &mut egui::Ui, app: &AppEntry, t: &Theme, selected: bool) -> egui::Response {
+    row_w_sel(ui, app, t, ui.available_width(), selected)
 }
 
 fn row_w(ui: &mut egui::Ui, app: &AppEntry, t: &Theme, w: f32) -> egui::Response {
+    row_w_sel(ui, app, t, w, false)
+}
+
+fn row_w_sel(
+    ui: &mut egui::Ui,
+    app: &AppEntry,
+    t: &Theme,
+    w: f32,
+    selected: bool,
+) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 34.0), egui::Sense::click());
     let painter = ui.painter().with_clip_rect(rect);
-    if resp.hovered() {
+    if selected {
+        painter.rect_filled(rect, egui::CornerRadius::same(5), t.card_hi);
+    } else if resp.hovered() {
         painter.rect_filled(rect, egui::CornerRadius::same(5), t.card_hi);
     }
     let icon = egui::Rect::from_min_size(
@@ -3167,7 +3244,24 @@ fn single_instance() -> bool {
     }
 }
 
+/// Строка в лог рядом с конфигом: %APPDATA%\OpenStart\openstart.log
+fn log_line(text: &str) {
+    let path = config_path().with_file_name("openstart.log");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write;
+        let _ = writeln!(f, "{stamp} {text}");
+    }
+}
+
 fn main() -> eframe::Result<()> {
+    std::panic::set_hook(Box::new(|info| {
+        log_line(&format!("panic: {info}"));
+    }));
+    log_line(&format!("start {}", env!("CARGO_PKG_VERSION")));
     let settings = std::env::args().any(|a| a == "--settings");
     if !single_instance() {
         return Ok(());
