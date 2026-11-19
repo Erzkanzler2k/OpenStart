@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -23,7 +23,25 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SetForegroundWindow, SetWindowPos, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx,
     KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
-use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT, WAIT_OBJECT_0,
+};
+use windows_sys::Win32::Graphics::Gdi::DeleteObject;
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::{
+    AttachThreadInput, CreateEventW, CreateMutexW, GetCurrentThreadId, OpenEventW, SetEvent,
+    WaitForSingleObject, EVENT_MODIFY_STATE,
+};
+use windows_sys::Win32::UI::Shell::{
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DestroyMenu, DestroyWindow, GetCursorPos, ICONINFO, MENU_ITEM_FLAGS, MF_SEPARATOR, MF_STRING,
+    RegisterClassW, RegisterWindowMessageW, TrackPopupMenu, TPM_NONOTIFY, TPM_RETURNCMD,
+    WNDCLASSW, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, HICON, IMAGE_ICON, LR_LOADFROMFILE,
+    LoadImageW,
+};
 
 const VK_LWIN: u32 = 0x5B;
 const VK_RWIN: u32 = 0x5C;
@@ -654,7 +672,7 @@ struct App {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, settings: bool) -> Self {
         let mut fonts = egui::FontDefinitions::default();
         if let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\segoeui.ttf") {
             fonts.font_data.insert(
@@ -690,8 +708,8 @@ impl App {
             cfg: load_config(),
             apps,
             query: String::new(),
-            mode: Mode::Settings,
-            visible: true,
+            mode: Mode::Menu,
+            visible: settings,
             opened_at: Instant::now(),
             focus_search: false,
             was_focused: false,
@@ -705,7 +723,15 @@ impl App {
             page: 0,
             quit: false,
         };
-        app.center_settings(&cc.egui_ctx);
+        *CTX.lock().unwrap() = Some(cc.egui_ctx.clone());
+        tray_init();
+        if settings {
+            app.center_settings(&cc.egui_ctx);
+        } else {
+            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
+                egui::pos2(-10000.0, -10000.0),
+            ));
+        }
         round_window(0, 0);
         app
     }
@@ -2643,6 +2669,12 @@ fn row_w(ui: &mut egui::Ui, app: &AppEntry, t: &Theme, w: f32) -> egui::Response
     resp
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        tray_remove();
+    }
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // после сворачивания/разворачивания текстура фона недействительна,
@@ -2656,6 +2688,21 @@ impl eframe::App for App {
         }
         if self.visible {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+
+        let ev = SETTINGS_EVENT.load(Ordering::SeqCst);
+        if ev != 0 && unsafe { WaitForSingleObject(ev as HANDLE, 0) } == WAIT_OBJECT_0 {
+            self.show_settings(ctx);
+        }
+
+        match TRAY_ACTION.swap(0, Ordering::SeqCst) {
+            1 => self.show_menu(ctx),
+            2 => self.show_settings(ctx),
+            3 => {
+                self.quit = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            _ => {}
         }
 
         if TOGGLE.swap(false, Ordering::SeqCst) {
@@ -2684,18 +2731,219 @@ impl eframe::App for App {
     }
 }
 
+
+// ---- значок в трее ----
+
+const WM_TRAY: u32 = 0x8000 + 1;
+const TRAY_UID: u32 = 1;
+static TRAY_ACTION: AtomicU8 = AtomicU8::new(0);
+static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
+static SETTINGS_EVENT: AtomicIsize = AtomicIsize::new(0);
+static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+static CTX: Mutex<Option<egui::Context>> = Mutex::new(None);
+
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Будит окно egui из оконной процедуры трея.
+fn wake() {
+    if let Ok(guard) = CTX.lock() {
+        if let Some(ctx) = guard.as_ref() {
+            ctx.request_repaint();
+        }
+    }
+}
+
+const ICON_ICO: &[u8] = include_bytes!("../assets/openstart.ico");
+
+/// Иконка трея: берём готовый .ico, GDI-иконки выходят прозрачными.
+fn make_icon() -> HICON {
+    let path = std::env::temp_dir().join("openstart.ico");
+    if std::fs::write(&path, ICON_ICO).is_err() {
+        return std::ptr::null_mut();
+    }
+    let name = wide(&path.to_string_lossy());
+    unsafe {
+        LoadImageW(
+            std::ptr::null_mut(),
+            name.as_ptr(),
+            IMAGE_ICON,
+            32,
+            32,
+            LR_LOADFROMFILE,
+        ) as HICON
+    }
+}
+
+unsafe extern "system" fn tray_proc(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+) -> LRESULT {
+    if msg == TASKBAR_CREATED.load(Ordering::SeqCst) && msg != 0 {
+        tray_add(hwnd);
+        return 0;
+    }
+    if msg == WM_TRAY {
+        match (lp as u32) & 0xffff {
+            WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
+                TRAY_ACTION.store(1, Ordering::SeqCst);
+                wake();
+            }
+            WM_RBUTTONUP => {
+                let menu = CreatePopupMenu();
+                AppendMenuW(menu, MF_STRING, 1, wide("Открыть меню").as_ptr());
+                AppendMenuW(menu, MF_STRING, 2, wide("Настройки OpenStart").as_ptr());
+                AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                AppendMenuW(menu, MF_STRING, 3, wide("Выход").as_ptr());
+                let mut pt = POINT { x: 0, y: 0 };
+                GetCursorPos(&mut pt);
+                // без этого меню не закрывается по клику мимо
+                SetForegroundWindow(hwnd);
+                let cmd = TrackPopupMenu(
+                    menu,
+                    TPM_RETURNCMD | TPM_NONOTIFY as MENU_ITEM_FLAGS,
+                    pt.x,
+                    pt.y,
+                    0,
+                    hwnd,
+                    std::ptr::null(),
+                );
+                DestroyMenu(menu);
+                if cmd != 0 {
+                    TRAY_ACTION.store(cmd as u8, Ordering::SeqCst);
+                    wake();
+                }
+            }
+            _ => {}
+        }
+        return 0;
+    }
+    DefWindowProcW(hwnd, msg, wp, lp)
+}
+
+fn tray_init() {
+    unsafe {
+        let hinst = GetModuleHandleW(std::ptr::null());
+        let class = wide("OpenStartTray");
+        let wc = WNDCLASSW {
+            style: 0,
+            lpfnWndProc: Some(tray_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hinst,
+            hIcon: std::ptr::null_mut(),
+            hCursor: std::ptr::null_mut(),
+            hbrBackground: std::ptr::null_mut(),
+            lpszMenuName: std::ptr::null(),
+            lpszClassName: class.as_ptr(),
+        };
+        RegisterClassW(&wc);
+        let hwnd = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            wide("OpenStartTray").as_ptr(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            hinst,
+            std::ptr::null_mut(),
+        );
+        if hwnd.is_null() {
+            return;
+        }
+        TRAY_HWND.store(hwnd as isize, Ordering::SeqCst);
+        TASKBAR_CREATED.store(
+            RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
+            Ordering::SeqCst,
+        );
+        tray_add(hwnd);
+    }
+}
+
+fn tray_add(hwnd: HWND) {
+    unsafe {
+        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd;
+        nid.uID = TRAY_UID;
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        nid.uCallbackMessage = WM_TRAY;
+        nid.hIcon = make_icon();
+        let tip = wide("OpenStart");
+        nid.szTip[..tip.len()].copy_from_slice(&tip);
+        Shell_NotifyIconW(NIM_ADD, &mut nid);
+    }
+}
+
+fn tray_remove() {
+    let hwnd = TRAY_HWND.swap(0, Ordering::SeqCst);
+    if hwnd == 0 {
+        return;
+    }
+    unsafe {
+        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd as HWND;
+        nid.uID = TRAY_UID;
+        Shell_NotifyIconW(NIM_DELETE, &mut nid);
+        DestroyWindow(hwnd as HWND);
+    }
+}
+
+/// false — уже запущен другой экземпляр, он получит сигнал открыть настройки.
+fn single_instance() -> bool {
+    unsafe {
+        let mutex = CreateMutexW(std::ptr::null(), 0, wide("OpenStart.Menu.Single").as_ptr());
+        if mutex.is_null() {
+            return true;
+        }
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let ev = OpenEventW(
+                EVENT_MODIFY_STATE,
+                0,
+                wide("OpenStart.ShowSettings").as_ptr(),
+            );
+            if !ev.is_null() {
+                SetEvent(ev);
+                CloseHandle(ev);
+            }
+            return false;
+        }
+        let ev = CreateEventW(
+            std::ptr::null(),
+            0,
+            0,
+            wide("OpenStart.ShowSettings").as_ptr(),
+        );
+        SETTINGS_EVENT.store(ev as isize, Ordering::SeqCst);
+        true
+    }
+}
+
 fn main() -> eframe::Result<()> {
+    let settings = std::env::args().any(|a| a == "--settings");
+    if !single_instance() {
+        return Ok(());
+    }
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 640.0])
             .with_resizable(false)
+            .with_taskbar(false)
             .with_title("OpenStart"),
         ..Default::default()
     };
     eframe::run_native(
         "OpenStart",
         options,
-        Box::new(|cc| Ok(Box::new(App::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(App::new(cc, settings)))),
     )
 }
