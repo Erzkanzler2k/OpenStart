@@ -23,6 +23,8 @@ tiene y dibuja el menú por su cuenta.
 
 - **Win abre, Win cierra** — también Esc, un clic fuera o al lanzar un programa. Sin
   reiniciar y sin reemplazar el shell.
+- **También el botón Inicio** — al pulsarlo se abre este menú en lugar del del sistema.
+  El primer clic calibra la posición del botón.
 - **Tus programas reales** — lee las carpetas del menú Inicio (todos los usuarios y el
   actual), muestra iconos reales y busca por nombre mientras escribes.
 - **Siete estilos** — Windows 7, Modern, Windows 10, Windows 11, Windows App, Windows Pro,
@@ -92,8 +94,8 @@ Rust 1.75+ con la cadena MSVC.
 
 ## Límites
 
-- No se reemplaza la barra de tareas: el botón Inicio sigue siendo del sistema, el menú se
-  abre con Win o con el icono.
+- La barra de tareas no se reemplaza: solo se interceptan los clics en el botón Inicio,
+  el resto sigue siendo del sistema.
 - Windows 11 ignora los accesos directos propios en `WinX\Group3`, así que no hay entrada
   en Win+X.
 - Sin aplicaciones UWP que no tengan acceso directo en el menú Inicio.
@@ -110,7 +112,7 @@ Rust 1.75+ con la cadena MSVC.
 
 Probado en Windows 11: abrir y cerrar con Win, búsqueda, lanzar programas, cambiar de estilo,
 guardar la configuración, Win+E, icono de la bandeja y su menú, reinicio de `explorer`,
-instancia única con `--settings`. No probado: otras distribuciones de teclado, Windows 10,
+instancia única con `--settings`, clic en el botón Inicio. No probado: otras distribuciones de teclado, Windows 10,
 varios monitores, cambios de DPI.
 
 ## Licencia

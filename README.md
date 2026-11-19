@@ -23,6 +23,8 @@ menu itself.
 
 - **Win to open, Win to close** — also Esc, a click outside, or launching an app.
   No reboot, no shell replacement.
+- **The taskbar Start button too** — a click on it opens this menu instead of the
+  system one. The very first click calibrates the button position.
 - **Your real apps** — reads the Start Menu folders (all users and current user),
   shows real icons, searches by name as you type.
 - **Seven styles** — Windows 7, Modern, Windows 10, Windows 11, Windows App,
@@ -93,8 +95,8 @@ Rust 1.75+ with the MSVC toolchain.
 
 ## Limitations
 
-- The taskbar is not replaced: the Start button stays system-owned, the menu is opened
-  by the Win key or the tray icon.
+- The taskbar itself is not replaced: only clicks on the Start button are
+  intercepted, everything else on the taskbar stays system-owned.
 - Windows 11 ignores custom shortcuts in `WinX\Group3`, so no Win+X entry is added.
 - No UWP apps that have no Start Menu shortcut.
 - No manual tile pinning or drag and drop.
@@ -111,8 +113,8 @@ Rust 1.75+ with the MSVC toolchain.
 
 Tested on Windows 11: opening and closing with Win, search, launching apps, switching
 styles, saving settings, Win+E, tray icon and its context menu, `explorer` restart,
-single instance with `--settings`. Not tested: other keyboard layouts, Windows 10,
-multiple monitors, DPI changes.
+single instance with `--settings`, a click on the taskbar Start button. Not tested:
+other keyboard layouts, Windows 10, multiple monitors, DPI changes.
 
 ## License
 

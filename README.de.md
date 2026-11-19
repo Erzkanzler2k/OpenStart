@@ -23,6 +23,8 @@ und zeichnet das Menü selbst.
 
 - **Win öffnet, Win schließt** — ebenso Esc, ein Klick daneben oder das Starten eines
   Programms. Ohne Neustart, ohne Shell-Ersatz.
+- **Auch die Start-Schaltfläche** — ein Klick darauf öffnet dieses Menü statt des
+  Systemmenüs. Der allererste Klick kalibriert die Position der Schaltfläche.
 - **Echte Programme** — liest die Startmenü-Ordner (alle Benutzer und aktueller Benutzer),
   zeigt echte Symbole und sucht beim Tippen nach Namen.
 - **Sieben Stile** — Windows 7, Modern, Windows 10, Windows 11, Windows App, Windows Pro,
@@ -93,8 +95,8 @@ Rust 1.75+ mit MSVC-Toolchain.
 
 ## Grenzen
 
-- Die Taskleiste wird nicht ersetzt: die Start-Schaltfläche bleibt beim System, das Menü
-  öffnet die Win-Taste oder das Symbol.
+- Die Taskleiste selbst wird nicht ersetzt: nur Klicks auf die Start-Schaltfläche werden
+  abgefangen, alles andere bleibt beim System.
 - Windows 11 ignoriert eigene Verknüpfungen in `WinX\Group3`, daher kein Win+X-Eintrag.
 - Keine UWP-Apps ohne Startmenü-Verknüpfung.
 - Kein manuelles Anheften oder Verschieben von Kacheln.
@@ -110,8 +112,8 @@ Rust 1.75+ mit MSVC-Toolchain.
 
 Getestet unter Windows 11: Öffnen und Schließen mit Win, Suche, Programmstart, Stilwechsel,
 Speichern der Einstellungen, Win+E, Infobereich-Symbol und Kontextmenü, `explorer`-Neustart,
-einzelne Instanz mit `--settings`. Nicht getestet: andere Tastaturlayouts, Windows 10,
-mehrere Monitore, DPI-Wechsel.
+einzelne Instanz mit `--settings`, Klick auf die Start-Schaltfläche. Nicht getestet:
+andere Tastaturlayouts, Windows 10, mehrere Monitore, DPI-Wechsel.
 
 ## Lizenz
 

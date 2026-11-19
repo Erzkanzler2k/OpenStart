@@ -19,12 +19,15 @@ use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, FindWindowW, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId,
-    SetForegroundWindow, SetWindowPos, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx,
-    KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, FindWindowW, GetClassNameW, GetForegroundWindow, GetMessageW, GetWindowRect,
+    GetWindowThreadProcessId, PostMessageW, SetForegroundWindow, SetWindowPos, WM_CLOSE,
+    SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT, WAIT_OBJECT_0,
+    CloseHandle, GetLastError, BOOL, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT, RECT,
+    WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Graphics::Gdi::DeleteObject;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -39,7 +42,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyMenu, DestroyWindow, GetCursorPos, ICONINFO, MENU_ITEM_FLAGS, MF_SEPARATOR, MF_STRING,
     RegisterClassW, RegisterWindowMessageW, TrackPopupMenu, TPM_NONOTIFY, TPM_RETURNCMD,
-    WNDCLASSW, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, HICON, IMAGE_ICON, LR_LOADFROMFILE,
+    WNDCLASSW, WM_LBUTTONDBLCLK, WM_RBUTTONUP, HICON, IMAGE_ICON, LR_LOADFROMFILE,
     LoadImageW,
 };
 
@@ -70,6 +73,10 @@ struct Config {
     tiles: bool,
     #[serde(default)]
     recent: Vec<String>,
+    #[serde(default)]
+    start_x: i32,
+    #[serde(default)]
+    start_y: i32,
 }
 
 impl Default for Config {
@@ -81,6 +88,8 @@ impl Default for Config {
             show_search: true,
             tiles: true,
             recent: Vec::new(),
+            start_x: 0,
+            start_y: 0,
         }
     }
 }
@@ -564,6 +573,14 @@ static TOGGLE: AtomicBool = AtomicBool::new(false);
 static WIN_DOWN: AtomicBool = AtomicBool::new(false);
 static CHORD: AtomicBool = AtomicBool::new(false);
 static WIN_AT: Mutex<Option<Instant>> = Mutex::new(None);
+/// Прямоугольник кнопки «Пуск»: центр, выученный по клику.
+static START_ZONE: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+static ZONE_DIRTY: AtomicBool = AtomicBool::new(false);
+static MOUSE_SWALLOW: AtomicBool = AtomicBool::new(false);
+static LAST_CLICK: Mutex<Option<(i32, i32, Instant)>> = Mutex::new(None);
+static START_FOUND: AtomicIsize = AtomicIsize::new(0);
+/// 0 — ждём клик, 1 — закрываем системное меню, 2 — показываем своё.
+static WATCH_STATE: Mutex<Option<(u8, Instant, i32, i32)>> = Mutex::new(None);
 
 fn start_hook(ctx: egui::Context) {
     // Хук не должен трогать egui: если обработчик задержится, Windows снимет хук.
@@ -576,17 +593,152 @@ fn start_hook(ctx: egui::Context) {
             }
         }
     });
+    // клик по системной кнопке «Пуск»: если позицию ещё не знаем, закрываем
+    // только что открывшееся системное меню и запоминаем кнопку
+    std::thread::spawn(|| {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            let state = *WATCH_STATE.lock().unwrap();
+            match state {
+                Some((1, at, x, y)) => {
+                    if at.elapsed().as_millis() >= 150 {
+                        unsafe { close_start_menu() };
+                        *WATCH_STATE.lock().unwrap() = Some((2, Instant::now(), x, y));
+                    }
+                }
+                Some((2, at, x, y)) => {
+                    let fg = unsafe { foreground_class() };
+                    if fg != "Windows.UI.Core.CoreWindow" || at.elapsed().as_millis() > 500 {
+                        *WATCH_STATE.lock().unwrap() = None;
+                        *START_ZONE.lock().unwrap() = Some((x, y));
+                        ZONE_DIRTY.store(true, Ordering::SeqCst);
+                        *LAST_CLICK.lock().unwrap() = None;
+                        TOGGLE.store(true, Ordering::SeqCst);
+                        wake();
+                    }
+                }
+                _ => {
+                    let click = *LAST_CLICK.lock().unwrap();
+                    let Some((x, y, at)) = click else { continue };
+                    if at.elapsed().as_millis() > 1200 {
+                        continue;
+                    }
+                    if !taskbar_contains(x, y) {
+                        continue;
+                    }
+                    if unsafe { foreground_class() } != "Windows.UI.Core.CoreWindow" {
+                        continue;
+                    }
+                    *WATCH_STATE.lock().unwrap() = Some((1, Instant::now(), x, y));
+                }
+            }
+        }
+    });
     std::thread::spawn(|| unsafe {
         // прошлый экземпляр мог оставить Win «зажатым» синтетическим нажатием
         send_win_up();
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_proc), std::ptr::null_mut(), 0);
+        let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), std::ptr::null_mut(), 0);
         if hook.is_null() {
             return;
         }
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
         UnhookWindowsHookEx(hook);
+        if !mouse.is_null() {
+            UnhookWindowsHookEx(mouse);
+        }
     });
+}
+
+unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 && lparam != 0 {
+        let ms = &*(lparam as *const MSLLHOOKSTRUCT);
+        let msg = wparam as u32;
+        if msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP {
+            let (x, y) = (ms.pt.x, ms.pt.y);
+            if msg == WM_LBUTTONDOWN {
+                *LAST_CLICK.lock().unwrap() = Some((x, y, Instant::now()));
+                if in_start_zone(x, y) {
+                    MOUSE_SWALLOW.store(true, Ordering::SeqCst);
+                    return 1;
+                }
+                return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
+            }
+            // отпускание: продлеваем отметку клика, чтобы сторож успел увидеть меню
+            let prev = *LAST_CLICK.lock().unwrap();
+            if let Some((lx, ly, _)) = prev {
+                *LAST_CLICK.lock().unwrap() = Some((lx, ly, Instant::now()));
+            }
+            if MOUSE_SWALLOW.swap(false, Ordering::SeqCst) {
+                TOGGLE.store(true, Ordering::SeqCst);
+                wake();
+                return 1;
+            }
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+}
+
+/// Клик по выученной кнопке «Пуск» внутри панели задач.
+fn in_start_zone(x: i32, y: i32) -> bool {
+    let zone = *START_ZONE.lock().unwrap();
+    let Some((cx, cy)) = zone else {
+        return false;
+    };
+    (x - cx).abs() <= 20 && (y - cy).abs() <= 24 && taskbar_contains(x, y)
+}
+
+fn taskbar_contains(x: i32, y: i32) -> bool {
+    unsafe {
+        let hwnd = FindWindowW(wide("Shell_TrayWnd").as_ptr(), std::ptr::null());
+        if hwnd.is_null() {
+            return false;
+        }
+        let mut r: RECT = std::mem::zeroed();
+        if GetWindowRect(hwnd, &mut r) == 0 {
+            return false;
+        }
+        x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
+    }
+}
+
+/// Класс окна на переднем плане.
+unsafe fn foreground_class() -> String {
+    let hwnd = GetForegroundWindow();
+    if hwnd.is_null() {
+        return String::new();
+    }
+    let mut buf = [0u16; 128];
+    let n = GetClassNameW(hwnd, buf.as_mut_ptr(), 128) as usize;
+    String::from_utf16_lossy(&buf[..n.min(128)])
+}
+
+/// Закрывает системное меню «Пуск»: Esc активному окну и WM_CLOSE на всякий случай.
+unsafe fn close_start_menu() {
+    let hwnd = GetForegroundWindow();
+    send_escape();
+    if !hwnd.is_null() {
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    }
+}
+
+unsafe fn send_escape() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+    };
+    let mut input: INPUT = std::mem::zeroed();
+    input.r#type = INPUT_KEYBOARD;
+    input.Anonymous.ki = KEYBDINPUT {
+        wVk: 0x1b,
+        wScan: 0,
+        dwFlags: 0,
+        time: 0,
+        dwExtraInfo: 1,
+    };
+    SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+    input.Anonymous.ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
 }
 
 unsafe extern "system" fn kb_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -725,8 +877,12 @@ impl App {
         let mut apps = scan_apps();
         attach_icons(&cc.egui_ctx, &mut apps);
 
+        let cfg = load_config();
+        if cfg.start_x != 0 || cfg.start_y != 0 {
+            *START_ZONE.lock().unwrap() = Some((cfg.start_x, cfg.start_y));
+        }
         let app = App {
-            cfg: load_config(),
+            cfg,
             apps,
             query: String::new(),
             mode: Mode::Menu,
@@ -2709,6 +2865,14 @@ impl eframe::App for App {
         }
         if self.visible {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+
+        if ZONE_DIRTY.swap(false, Ordering::SeqCst) {
+            if let Some((x, y)) = *START_ZONE.lock().unwrap() {
+                self.cfg.start_x = x;
+                self.cfg.start_y = y;
+                App::save(self);
+            }
         }
 
         let ev = SETTINGS_EVENT.load(Ordering::SeqCst);

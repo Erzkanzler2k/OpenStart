@@ -23,6 +23,8 @@ présents dans Windows et dessine le menu elle-même.
 
 - **Win ouvre, Win ferme** — comme Échap, un clic à côté ou le lancement d'un programme.
   Sans redémarrage, sans remplacer le shell.
+- **Le bouton Démarrer aussi** — un clic dessus ouvre ce menu au lieu de celui du
+  système. Le tout premier clic calibre la position du bouton.
 - **Vos vrais programmes** — lit les dossiers du menu Démarrer (tous les utilisateurs et
   l'utilisateur courant), affiche les vraies icônes et cherche par nom à la frappe.
 - **Sept styles** — Windows 7, Modern, Windows 10, Windows 11, Windows App, Windows Pro,
@@ -92,8 +94,8 @@ Rust 1.75+ avec la chaîne MSVC.
 
 ## Limites
 
-- La barre des tâches n'est pas remplacée : le bouton Démarrer reste celui du système, le
-  menu s'ouvre avec Win ou l'icône.
+- La barre des tâches elle-même n'est pas remplacée : seuls les clics sur le bouton
+  Démarrer sont interceptés, le reste reste au système.
 - Windows 11 ignore les raccourcis personnalisés dans `WinX\Group3`, donc pas d'entrée Win+X.
 - Pas d'applications UWP sans raccourci dans le menu Démarrer.
 - Pas d'épinglage manuel ni de glisser-déposer de tuiles.
