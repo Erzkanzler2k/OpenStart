@@ -7,6 +7,7 @@
 [English](README.md) · [Русский](README.ru.md) · [Deutsch](README.de.md) · **Français** · [Español](README.es.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 [![Version](https://img.shields.io/github/v/release/Erzkanzler2k/OpenStart?label=version&color=e0af68)](https://github.com/Erzkanzler2k/OpenStart/releases)
+[![CI](https://github.com/Erzkanzler2k/OpenStart/actions/workflows/ci.yml/badge.svg)](https://github.com/Erzkanzler2k/OpenStart/actions/workflows/ci.yml)
 [![Plateforme](https://img.shields.io/badge/Windows%2010%2F11-x64-0078d4)](#pr%C3%A9requis)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-dea584)](#compiler-depuis-les-sources)
 [![Licence](https://img.shields.io/badge/licence-MIT-97ca00)](LICENSE)
@@ -57,11 +58,19 @@ Si l'icône est masquée, activez-la dans **Paramètres → Personnalisation →
 
 | Action | Comment |
 | --- | --- |
+| Parcourir les résultats | **↑ / ↓** |
+| Lancer la sélection | **Entrée** |
 | Ouvrir / fermer le menu | **Win** |
 | Fermer sans rien lancer | **Échap**, clic à côté |
 | Ouvrir les paramètres | Icône → *Paramètres* ou l'engrenage dans le menu |
 | Quitter | Icône → *Quitter* ou **Gestion → Quitter** |
 | Changer de style | Section *Menu Démarrer*, cliquez une carte |
+
+## Configuration
+
+Les paramètres sont dans `%APPDATA%\OpenStart\config.json` : `style` (0–6), `dark`, `alpha`,
+`show_search`, `tiles`, `recent`, `start_x`/`start_y` (position mémorisée du bouton
+Démarrer ; effacez-la pour la recalibrer).
 
 ## Prérequis
 
@@ -72,6 +81,7 @@ Si l'icône est masquée, activez-la dans **Paramètres → Personnalisation →
 
 ```powershell
 cargo build --release
+cargo test --release
 .\target\release\openstart.exe
 ```
 

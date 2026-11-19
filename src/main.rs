@@ -31,7 +31,9 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, BOOL, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT, RECT,
     WAIT_OBJECT_0,
 };
-use windows_sys::Win32::Graphics::Gdi::DeleteObject;
+use windows_sys::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{
     AttachThreadInput, CreateEventW, CreateMutexW, GetCurrentThreadId, OpenEventW, SetEvent,
@@ -426,6 +428,28 @@ fn menu_size(style: usize) -> (f32, f32) {
         4 => (1000.0, 680.0),
         5 => (640.0, 640.0),
         _ => (860.0, 700.0),
+    }
+}
+
+/// Рабочий прямоугольник монитора, на котором сейчас курсор (в точках egui).
+fn cursor_monitor(ctx: &egui::Context) -> egui::Rect {
+    let ppp = ctx.pixels_per_point().max(0.5);
+    unsafe {
+        let mut pt = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut pt) == 0 {
+            return egui::Rect::from_min_size(egui::Pos2::ZERO, monitor_size(ctx));
+        }
+        let mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(mon, &mut info) == 0 {
+            return egui::Rect::from_min_size(egui::Pos2::ZERO, monitor_size(ctx));
+        }
+        let r = info.rcMonitor;
+        egui::Rect::from_min_max(
+            egui::pos2(r.left as f32 / ppp, r.top as f32 / ppp),
+            egui::pos2(r.right as f32 / ppp, r.bottom as f32 / ppp),
+        )
     }
 }
 
@@ -1089,12 +1113,12 @@ impl App {
     }
 
     fn center_settings(&self, ctx: &egui::Context) {
-        let m = monitor_size(ctx);
+        let m = cursor_monitor(ctx);
         let size = egui::vec2(1330.0, 680.0);
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-            (m.x - size.x) / 2.0,
-            (m.y - size.y) / 2.0 - 20.0,
+            m.center().x - size.x / 2.0,
+            m.center().y - size.y / 2.0 - 20.0,
         )));
     }
 
@@ -1110,14 +1134,21 @@ impl App {
         self.power_open = false;
         self.query.clear();
         let (w, h) = menu_size(self.cfg.style);
-        let m = monitor_size(ctx);
+        let m = cursor_monitor(ctx);
         let x = if self.cfg.style >= 3 {
-            (m.x - w) / 2.0
+            m.center().x - w / 2.0
         } else {
-            12.0
+            m.left() + 12.0
         };
-        let y = (m.y - h - 56.0).max(8.0);
-        self.backdrop = capture_backdrop(x as i32, y as i32, w as i32, h as i32).map(|img| {
+        let y = (m.bottom() - h - 56.0).max(m.top() + 8.0);
+        let ppp = ctx.pixels_per_point().max(0.5);
+        self.backdrop = capture_backdrop(
+            (x * ppp) as i32,
+            (y * ppp) as i32,
+            (w * ppp) as i32,
+            (h * ppp) as i32,
+        )
+        .map(|img| {
             ctx.load_texture("backdrop", img, egui::TextureOptions::LINEAR)
         });
         use egui::ViewportCommand as V;

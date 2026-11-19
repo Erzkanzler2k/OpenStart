@@ -7,6 +7,7 @@
 [English](README.md) · [Русский](README.ru.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [中文](README.zh-CN.md) · **日本語**
 
 [![リリース](https://img.shields.io/github/v/release/Erzkanzler2k/OpenStart?label=release&color=e0af68)](https://github.com/Erzkanzler2k/OpenStart/releases)
+[![CI](https://github.com/Erzkanzler2k/OpenStart/actions/workflows/ci.yml/badge.svg)](https://github.com/Erzkanzler2k/OpenStart/actions/workflows/ci.yml)
 [![プラットフォーム](https://img.shields.io/badge/Windows%2010%2F11-x64-0078d4)](#動作環境)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-dea584)](#ソースからビルド)
 [![ライセンス](https://img.shields.io/badge/license-MIT-97ca00)](LICENSE)
@@ -57,11 +58,19 @@ Rust 製の実行ファイル 1 つ。インストーラーもサービスもレ
 
 | 操作 | 方法 |
 | --- | --- |
+| 候補を移動 | **↑ / ↓** |
+| 選択を起動 | **Enter** |
 | メニューを開く / 閉じる | **Win** |
 | 何も起動せず閉じる | **Esc**、外側をクリック |
 | 設定を開く | トレイのアイコン → *設定*、またはメニュー右下の歯車 |
 | 終了 | トレイのアイコン → *終了*、または **管理 → 終了** |
 | スタイル変更 | *スタートメニュー* のセクションでカードをクリック |
+
+## 設定
+
+設定は `%APPDATA%\OpenStart\config.json` に保存されます: `style`（0〜6）、`dark`、`alpha`、
+`show_search`、`tiles`、`recent`、`start_x`/`start_y`（スタート ボタンの記憶位置。削除すると
+再学習します）。
 
 ## 動作環境
 
@@ -72,6 +81,7 @@ Rust 製の実行ファイル 1 つ。インストーラーもサービスもレ
 
 ```powershell
 cargo build --release
+cargo test --release
 .\target\release\openstart.exe
 ```
 

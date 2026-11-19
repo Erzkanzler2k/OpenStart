@@ -7,6 +7,7 @@
 [English](README.md) · [Русский](README.ru.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · **Español** · [中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 [![Versión](https://img.shields.io/github/v/release/Erzkanzler2k/OpenStart?label=versi%C3%B3n&color=e0af68)](https://github.com/Erzkanzler2k/OpenStart/releases)
+[![CI](https://github.com/Erzkanzler2k/OpenStart/actions/workflows/ci.yml/badge.svg)](https://github.com/Erzkanzler2k/OpenStart/actions/workflows/ci.yml)
 [![Plataforma](https://img.shields.io/badge/Windows%2010%2F11-x64-0078d4)](#requisitos)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-dea584)](#compilar-desde-el-c%C3%B3digo)
 [![Licencia](https://img.shields.io/badge/licencia-MIT-97ca00)](LICENSE)
@@ -57,11 +58,19 @@ Otros iconos del área de notificación**.
 
 | Acción | Cómo |
 | --- | --- |
+| Moverse por los resultados | **↑ / ↓** |
+| Abrir la selección | **Intro** |
 | Abrir / cerrar el menú | **Win** |
 | Cerrar sin abrir nada | **Esc**, clic fuera |
 | Abrir la configuración | Icono de la bandeja → *Configuración* o el engranaje del menú |
 | Salir | Icono → *Salir* o **Administrar → Salir** |
 | Cambiar de estilo | Sección *Menú Inicio*, pulsa una tarjeta |
+
+## Configuración
+
+Los ajustes están en `%APPDATA%\OpenStart\config.json`: `style` (0–6), `dark`, `alpha`,
+`show_search`, `tiles`, `recent`, `start_x`/`start_y` (posición recordada del botón Inicio;
+bórrela para recalibrarla).
 
 ## Requisitos
 
@@ -72,6 +81,7 @@ Otros iconos del área de notificación**.
 
 ```powershell
 cargo build --release
+cargo test --release
 .\target\release\openstart.exe
 ```
 

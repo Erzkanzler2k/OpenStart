@@ -7,6 +7,7 @@
 [English](README.md) · [Русский](README.ru.md) · **Deutsch** · [Français](README.fr.md) · [Español](README.es.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 [![Release](https://img.shields.io/github/v/release/Erzkanzler2k/OpenStart?label=release&color=e0af68)](https://github.com/Erzkanzler2k/OpenStart/releases)
+[![CI](https://github.com/Erzkanzler2k/OpenStart/actions/workflows/ci.yml/badge.svg)](https://github.com/Erzkanzler2k/OpenStart/actions/workflows/ci.yml)
 [![Plattform](https://img.shields.io/badge/Windows%2010%2F11-x64-0078d4)](#voraussetzungen)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-dea584)](#aus-dem-quellcode-bauen)
 [![Lizenz](https://img.shields.io/badge/lizenz-MIT-97ca00)](LICENSE)
@@ -58,11 +59,19 @@ Symbole im Infobereich** aktivieren.
 
 | Aktion | So |
 | --- | --- |
+| Durch die Ergebnisse | **↑ / ↓** |
+| Auswahl starten | **Enter** |
 | Menü öffnen / schließen | **Win** |
 | Schließen ohne Start | **Esc**, Klick daneben |
 | Einstellungen öffnen | Symbol im Infobereich → *Einstellungen* oder das Zahnrad im Menü |
 | Beenden | Symbol → *Beenden* oder **Verwalten → Beenden** |
 | Stil wechseln | Bereich *Startmenü*, auf eine Karte klicken |
+
+## Konfiguration
+
+Einstellungen liegen in `%APPDATA%\OpenStart\config.json`: `style` (0–6), `dark`, `alpha`,
+`show_search`, `tiles`, `recent`, `start_x`/`start_y` (gemerkte Position der
+Start-Schaltfläche; löschen, um sie neu zu lernen).
 
 ## Voraussetzungen
 
@@ -73,6 +82,7 @@ Symbole im Infobereich** aktivieren.
 
 ```powershell
 cargo build --release
+cargo test --release
 .\target\release\openstart.exe
 ```
 

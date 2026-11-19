@@ -7,6 +7,7 @@
 [English](README.md) · [Русский](README.ru.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · **中文** · [日本語](README.ja.md)
 
 [![版本](https://img.shields.io/github/v/release/Erzkanzler2k/OpenStart?label=%E7%89%88%E6%9C%AC&color=e0af68)](https://github.com/Erzkanzler2k/OpenStart/releases)
+[![CI](https://github.com/Erzkanzler2k/OpenStart/actions/workflows/ci.yml/badge.svg)](https://github.com/Erzkanzler2k/OpenStart/actions/workflows/ci.yml)
 [![平台](https://img.shields.io/badge/Windows%2010%2F11-x64-0078d4)](#系统要求)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-dea584)](#从源码构建)
 [![许可证](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-97ca00)](LICENSE)
@@ -52,11 +53,18 @@
 
 | 操作 | 方法 |
 | --- | --- |
+| 在结果中移动 | **↑ / ↓** |
+| 启动所选 | **Enter** |
 | 打开 / 关闭菜单 | **Win** |
 | 关闭且不启动任何程序 | **Esc**、点击菜单外 |
 | 打开设置 | 托盘图标 → *设置*，或菜单底部的齿轮 |
 | 退出 | 托盘图标 → *退出*，或 **管理 → 退出** |
 | 切换样式 | *开始菜单* 分区，点击卡片 |
+
+## 配置
+
+设置位于 `%APPDATA%\OpenStart\config.json`：`style`（0–6）、`dark`、`alpha`、`show_search`、
+`tiles`、`recent`、`start_x`/`start_y`（记住的开始按钮位置；删除后可重新校准）。
 
 ## 系统要求
 
@@ -67,6 +75,7 @@
 
 ```powershell
 cargo build --release
+cargo test --release
 .\target\release\openstart.exe
 ```
 
