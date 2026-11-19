@@ -19,9 +19,10 @@ use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, FindWindowW, GetClassNameW, GetForegroundWindow, GetMessageW, GetWindowRect,
+    CallNextHookEx, FindWindowExW, FindWindowW, GetClassNameW, GetForegroundWindow, GetMessageW,
+    GetWindowRect,
     GetWindowTextW, GetWindowThreadProcessId, PostMessageW, SetForegroundWindow, SetWindowPos,
-    WM_CLOSE,
+    WM_CLOSE, SW_HIDE,
     SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
     WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -600,7 +601,7 @@ fn start_hook(ctx: egui::Context) {
     // закрываем его сразу, как только оно появилось
     std::thread::spawn(|| {
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(15));
+            std::thread::sleep(std::time::Duration::from_millis(10));
             let fg = unsafe { foreground_class_and_title() };
             let start_open = fg
                 .as_ref()
@@ -681,7 +682,36 @@ fn in_start_zone(x: i32, y: i32) -> bool {
     let Some((cx, cy)) = zone else {
         return false;
     };
-    (x - cx).abs() <= 20 && (y - cy).abs() <= 24 && taskbar_contains(x, y)
+    if (y - cy).abs() > 24 || !taskbar_contains(x, y) {
+        return false;
+    }
+    // справа сразу за кнопкой «Пуск» начинаются кнопки программ — их не трогаем
+    let right = tasklist_left().map(|l| l - 2).unwrap_or(i32::MAX);
+    x >= cx - 24 && x <= (cx + 24).min(right)
+}
+
+/// Левый край области кнопок запущенных программ на панели задач.
+fn tasklist_left() -> Option<i32> {
+    unsafe {
+        let tray = FindWindowW(wide("Shell_TrayWnd").as_ptr(), std::ptr::null());
+        if tray.is_null() {
+            return None;
+        }
+        let list = FindWindowExW(
+            tray,
+            std::ptr::null_mut(),
+            wide("MSTaskListWClass").as_ptr(),
+            std::ptr::null(),
+        );
+        if list.is_null() {
+            return None;
+        }
+        let mut r: RECT = std::mem::zeroed();
+        if GetWindowRect(list, &mut r) == 0 {
+            return None;
+        }
+        Some(r.left)
+    }
 }
 
 fn taskbar_contains(x: i32, y: i32) -> bool {
@@ -737,10 +767,13 @@ unsafe fn foreground_class_and_title() -> Option<(String, String)> {
 /// Закрывает системное меню «Пуск»: Esc активному окну и WM_CLOSE на всякий случай.
 unsafe fn close_start_menu() {
     let hwnd = GetForegroundWindow();
-    send_escape();
-    if !hwnd.is_null() {
-        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    if hwnd.is_null() {
+        return;
     }
+    // сначала мгновенно прячем окно, потом закрываем по-настоящему
+    ShowWindow(hwnd, SW_HIDE);
+    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    send_escape();
 }
 
 unsafe fn send_escape() {
