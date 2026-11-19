@@ -390,9 +390,9 @@ fn short(name: &str, limit: usize) -> String {
 
 fn menu_size(style: usize) -> (f32, f32) {
     match style {
-        0 => (430.0, 560.0),
+        0 => (520.0, 600.0),
         1 => (480.0, 590.0),
-        2 => (520.0, 600.0),
+        2 => (620.0, 620.0),
         3 => (1000.0, 700.0),
         4 => (1000.0, 680.0),
         5 => (640.0, 640.0),
@@ -1197,6 +1197,141 @@ impl App {
         launch
     }
 
+    fn win7_pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Theme,
+        user: &str,
+    ) -> (Option<String>, bool) {
+        let h = ui.available_height();
+        let mut launch = None;
+        let mut open_settings = false;
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2((ui.available_width() - 180.0).max(180.0), h),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    if self.cfg.show_search {
+                        self.search_box(ui, t, false, "Поиск программ");
+                        ui.add_space(8.0);
+                    }
+                    let list = self.matching();
+                    egui::ScrollArea::vertical()
+                        .id_salt("win7-list")
+                        .auto_shrink([false, false])
+                        .max_height((ui.available_height() - 46.0).max(80.0))
+                        .show(ui, |ui| {
+                            for &idx in &list {
+                                if row(ui, &self.apps[idx], t).clicked() {
+                                    launch = Some(self.apps[idx].target.clone());
+                                }
+                            }
+                        });
+                    ui.add_space(6.0);
+                    if self.footer_bar(ui, t, user, true) {
+                        open_settings = true;
+                    }
+                },
+            );
+            ui.add_space(10.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), h),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    let links = [
+                        ("\u{E8B7}", "Документы"),
+                        ("\u{E896}", "Загрузки"),
+                        ("\u{E8D6}", "Музыка"),
+                        ("\u{EB9F}", "Изображения"),
+                        ("\u{E713}", "Параметры"),
+                        ("\u{E7F4}", "Панель управления"),
+                    ];
+                    for (i, (icon, label)) in links.iter().enumerate() {
+                        if link_row(ui, icon, label, t).clicked() {
+                            match i {
+                                0 => open_folder("Documents"),
+                                1 => open_folder("Downloads"),
+                                2 => open_folder("Music"),
+                                3 => open_folder("Pictures"),
+                                4 => launch_target("ms-settings:"),
+                                _ => run_detached("control.exe", &[]),
+                            }
+                        }
+                    }
+                },
+            );
+        });
+        (launch, open_settings)
+    }
+
+    fn win10_pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Theme,
+        user: &str,
+    ) -> (Option<String>, bool) {
+        let h = ui.available_height();
+        let mut launch = None;
+        let mut open_settings = false;
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(196.0, h),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    if self.cfg.show_search {
+                        self.search_box(ui, t, false, "Поиск в Windows");
+                        ui.add_space(8.0);
+                    }
+                    let list = self.matching();
+                    egui::ScrollArea::vertical()
+                        .id_salt("win10-list")
+                        .auto_shrink([false, false])
+                        .max_height((ui.available_height() - 46.0).max(80.0))
+                        .show(ui, |ui| {
+                            for &idx in &list {
+                                if row(ui, &self.apps[idx], t).clicked() {
+                                    launch = Some(self.apps[idx].target.clone());
+                                }
+                            }
+                        });
+                    ui.add_space(6.0);
+                    if self.footer_bar(ui, t, user, true) {
+                        open_settings = true;
+                    }
+                },
+            );
+            ui.add_space(14.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), h),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.label(
+                        egui::RichText::new("Закреплено")
+                            .size(13.0)
+                            .strong()
+                            .color(t.text),
+                    );
+                    ui.add_space(8.0);
+                    let list = self.matching();
+                    egui::Grid::new("win10-tiles")
+                        .num_columns(3)
+                        .spacing([6.0, 6.0])
+                        .show(ui, |ui| {
+                            for (n, &idx) in list.iter().take(12).enumerate() {
+                                if tile(ui, &self.apps[idx], t, 104.0, 86.0).clicked() {
+                                    launch = Some(self.apps[idx].target.clone());
+                                }
+                                if (n + 1) % 3 == 0 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                },
+            );
+        });
+        (launch, open_settings)
+    }
+
     fn menu_ui(&mut self, ctx: &egui::Context) {
         let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
@@ -1277,6 +1412,14 @@ impl App {
                     if self.footer_bar(ui, &t, &user, small) {
                         open_settings = true;
                     }
+                } else if self.cfg.style == 0 {
+                    let (l, s) = self.win7_pane(ui, &t, &user);
+                    launch = l;
+                    open_settings |= s;
+                } else if self.cfg.style == 2 {
+                    let (l, s) = self.win10_pane(ui, &t, &user);
+                    launch = l;
+                    open_settings |= s;
                 } else if !modern {
                     ui.label(
                         egui::RichText::new("OpenStart11")
@@ -1893,183 +2036,167 @@ fn style_card(
 }
 
 fn draw_preview(painter: &egui::Painter, rect: egui::Rect, style: usize) {
-    let ink = egui::Color32::from_rgb(0x4a, 0x4a, 0x58);
-    let dim = egui::Color32::from_rgb(0x38, 0x38, 0x42);
-    let line = egui::Color32::from_rgb(0x3f, 0x3f, 0x4a);
+    let win = egui::Color32::from_rgb(0x1f, 0x1f, 0x24);
+    let panel = egui::Color32::from_rgb(0x2b, 0x2b, 0x32);
+    let panel_hi = egui::Color32::from_rgb(0x37, 0x37, 0x40);
+    let ink = egui::Color32::from_rgb(0x4c, 0x4c, 0x58);
+    let line = egui::Color32::from_rgb(0x58, 0x58, 0x65);
+    let accent = ACCENT;
+
+    let x = |f: f32| rect.min.x + rect.width() * f;
+    let y = |f: f32| rect.min.y + rect.height() * f;
+    let bx = |x0: f32, y0: f32, x1: f32, y1: f32, c: egui::Color32, r: u8| {
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(x(x0), y(y0)), egui::pos2(x(x1), y(y1))),
+            egui::CornerRadius::same(r),
+            c,
+        );
+    };
+    let dot = |cx: f32, cy: f32, d: f32, c: egui::Color32| {
+        painter.circle_filled(egui::pos2(x(cx), y(cy)), d * rect.height() / 2.0, c);
+    };
+    // значок приложения + подпись под ним
+    let icon = |cx: f32, cy: f32, s: f32, label: bool| {
+        let half = s * rect.height() / 2.0;
+        painter.rect_filled(
+            egui::Rect::from_center_size(
+                egui::pos2(x(cx), y(cy)),
+                egui::vec2(half * 2.0, half * 2.0),
+            ),
+            egui::CornerRadius::same(2),
+            ink,
+        );
+        if label {
+            painter.rect_filled(
+                egui::Rect::from_center_size(
+                    egui::pos2(x(cx), y(cy) + half + rect.height() * 0.035),
+                    egui::vec2(half * 1.8, 1.5),
+                ),
+                egui::CornerRadius::same(1),
+                line,
+            );
+        }
+    };
+    let footer = |top: f32| {
+        dot(0.07, top + 0.045, 0.075, panel_hi);
+        bx(0.12, top + 0.032, 0.30, top + 0.056, line, 1);
+        dot(0.91, top + 0.045, 0.032, line);
+        dot(0.97, top + 0.045, 0.032, line);
+    };
+
+    bx(0.0, 0.0, 1.0, 1.0, win, 4);
+
     match style {
         0 => {
-            let left = egui::Rect::from_min_size(
-                rect.min,
-                egui::vec2(rect.width() * 0.62, rect.height()),
-            );
-            painter.rect_filled(left, 2.0, dim);
-            painter.rect_filled(
-                egui::Rect::from_min_size(left.min, egui::vec2(left.width(), 11.0)),
-                2.0,
-                ink,
-            );
-            for i in 0..5 {
-                painter.rect_filled(
-                    egui::Rect::from_min_size(left.min + egui::vec2(5.0, 17.0 + i as f32 * 10.0), egui::vec2(left.width() - 10.0, 4.0)),
-                    1.0,
-                    line,
-                );
+            let mid = 0.59;
+            bx(0.04, 0.06, mid, 0.94, panel, 2);
+            bx(0.06, 0.09, 0.28, 0.115, accent, 1);
+            bx(0.06, 0.15, mid - 0.02, 0.24, panel_hi, 3);
+            for i in 0..6 {
+                let cy = 0.31 + i as f32 * 0.095;
+                icon(0.10, cy, 0.065, false);
+                bx(0.15, cy - 0.011, mid - 0.04, cy + 0.011, line, 1);
             }
-            let right = egui::Rect::from_min_size(
-                egui::pos2(left.max.x + 5.0, rect.min.y),
-                egui::vec2(rect.max.x - left.max.x - 5.0, rect.height()),
-            );
-            painter.rect_filled(right, 2.0, dim);
-            for i in 0..3 {
-                painter.rect_filled(
-                    egui::Rect::from_min_size(right.min + egui::vec2(5.0, 6.0 + i as f32 * 12.0), egui::vec2(right.width() - 10.0, 8.0)),
-                    1.0,
-                    line,
-                );
+            bx(mid + 0.02, 0.06, 0.96, 0.94, panel, 2);
+            for i in 0..5 {
+                let cy = 0.15 + i as f32 * 0.13;
+                icon(mid + 0.07, cy, 0.05, false);
+                bx(mid + 0.12, cy - 0.011, 0.92, cy + 0.011, line, 1);
             }
         }
         1 => {
-            painter.rect_filled(rect, 2.0, dim);
-            painter.rect_filled(
-                egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 10.0)),
-                2.0,
-                ink,
-            );
-            for r in 0..4 {
-                painter.rect_filled(
-                    egui::Rect::from_min_size(rect.min + egui::vec2(6.0, 16.0 + r as f32 * 10.0), egui::vec2(rect.width() * 0.55, 5.0)),
-                    1.0,
-                    line,
-                );
-            }
+            bx(0.05, 0.07, 0.30, 0.10, accent, 1);
+            bx(0.05, 0.14, 0.95, 0.23, panel_hi, 4);
+            bx(0.05, 0.28, 0.20, 0.30, line, 1);
             for r in 0..2 {
-                for c in 0..2 {
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            rect.min + egui::vec2(rect.width() * 0.62 + c as f32 * 22.0, 18.0 + r as f32 * 22.0),
-                            egui::vec2(18.0, 18.0),
-                        ),
-                        2.0,
-                        ink,
-                    );
+                for c in 0..4 {
+                    icon(0.14 + c as f32 * 0.22, 0.40 + r as f32 * 0.21, 0.075, true);
                 }
             }
+            bx(0.05, 0.67, 0.22, 0.69, line, 1);
+            bx(0.05, 0.74, 0.46, 0.78, panel, 2);
+            bx(0.52, 0.74, 0.93, 0.78, panel, 2);
+            footer(0.85);
         }
         2 => {
-            painter.rect_filled(rect, 2.0, dim);
-            for r in 0..3 {
-                for c in 0..6 {
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            rect.min + egui::vec2(6.0 + c as f32 * 20.0, 10.0 + r as f32 * 22.0),
-                            egui::vec2(16.0, 17.0),
-                        ),
-                        2.0,
-                        ink,
-                    );
+            bx(0.04, 0.06, 0.34, 0.94, panel, 2);
+            bx(0.05, 0.10, 0.33, 0.18, panel_hi, 3);
+            for i in 0..5 {
+                let cy = 0.24 + i as f32 * 0.105;
+                icon(0.09, cy, 0.06, false);
+                bx(0.14, cy - 0.010, 0.32, cy + 0.010, line, 1);
+            }
+            dot(0.09, 0.88, 0.07, panel_hi);
+            bx(0.14, 0.868, 0.26, 0.892, line, 1);
+            bx(0.37, 0.08, 0.55, 0.10, line, 1);
+            for r in 0..2 {
+                for c in 0..3 {
+                    icon(0.46 + c as f32 * 0.17, 0.24 + r as f32 * 0.25, 0.085, true);
                 }
             }
         }
         3 => {
-            painter.rect_filled(
-                egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * 0.72, rect.height())),
-                3.0,
-                dim,
-            );
-            painter.rect_filled(
-                egui::Rect::from_min_size(rect.min + egui::vec2(6.0, 6.0), egui::vec2(rect.width() * 0.72 - 12.0, 9.0)),
-                3.0,
-                ink,
-            );
-            for r in 0..3 {
-                for c in 0..4 {
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            rect.min + egui::vec2(8.0 + c as f32 * 22.0, 22.0 + r as f32 * 18.0),
-                            egui::vec2(14.0, 13.0),
-                        ),
-                        2.0,
-                        ink,
-                    );
+            bx(0.03, 0.05, 0.68, 0.95, panel, 2);
+            bx(0.05, 0.10, 0.66, 0.19, panel_hi, 5);
+            bx(0.05, 0.24, 0.18, 0.265, line, 1);
+            for r in 0..2 {
+                for c in 0..5 {
+                    icon(0.10 + c as f32 * 0.12, 0.35 + r as f32 * 0.16, 0.06, true);
                 }
             }
-            let right = egui::Rect::from_min_size(
-                egui::pos2(rect.min.x + rect.width() * 0.76, rect.min.y),
-                egui::vec2(rect.width() * 0.24, rect.height()),
-            );
-            painter.rect_filled(right, 3.0, dim);
-            painter.circle_filled(
-                egui::pos2(right.center().x, right.min.y + 12.0),
-                7.0,
-                ink,
-            );
-            for i in 0..4 {
-                painter.rect_filled(
-                    egui::Rect::from_min_size(right.min + egui::vec2(5.0, 26.0 + i as f32 * 11.0), egui::vec2(right.width() - 10.0, 4.0)),
-                    1.0,
-                    line,
-                );
+            bx(0.05, 0.62, 0.20, 0.645, line, 1);
+            for r in 0..2 {
+                for c in 0..2 {
+                    let x0 = 0.05 + c as f32 * 0.31;
+                    let y0 = 0.69 + r as f32 * 0.10;
+                    bx(x0, y0, x0 + 0.29, y0 + 0.08, panel_hi, 2);
+                }
             }
+            bx(0.70, 0.05, 0.97, 0.95, panel, 2);
+            dot(0.835, 0.18, 0.15, panel_hi);
+            bx(0.78, 0.28, 0.89, 0.305, line, 1);
+            for i in 0..5 {
+                let cy = 0.38 + i as f32 * 0.075;
+                icon(0.735, cy, 0.045, false);
+                bx(0.755, cy - 0.010, 0.93, cy + 0.010, line, 1);
+            }
+            dot(0.86, 0.90, 0.036, line);
+            dot(0.93, 0.90, 0.036, line);
+        }
+        4 => {
+            bx(0.03, 0.06, 0.97, 0.94, panel, 2);
+            bx(0.05, 0.10, 0.95, 0.19, panel_hi, 5);
+            bx(0.05, 0.24, 0.22, 0.265, line, 1);
+            for i in 0..7 {
+                let cy = 0.33 + i as f32 * 0.078;
+                icon(0.08, cy, 0.05, false);
+                bx(0.12, cy - 0.010, 0.55, cy + 0.010, line, 1);
+            }
+            footer(0.86);
         }
         5 => {
-            painter.rect_filled(rect, 1.0, dim);
-            let half = rect.width() / 2.0;
+            bx(0.03, 0.05, 0.97, 0.95, panel, 2);
+            bx(0.04, 0.09, 0.96, 0.18, panel_hi, 3);
+            bx(0.04, 0.23, 0.22, 0.255, line, 1);
             for c in 0..2 {
-                for r in 0..5 {
-                    let x = rect.min.x + 6.0 + c as f32 * half;
-                    let y = rect.min.y + 7.0 + r as f32 * 14.0;
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(10.0, 10.0)),
-                        1.0,
-                        ink,
-                    );
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(x + 14.0, y + 3.0),
-                            egui::vec2(half - 30.0, 4.0),
-                        ),
-                        1.0,
-                        line,
-                    );
+                for r in 0..6 {
+                    let cx = 0.05 + c as f32 * 0.47;
+                    let cy = 0.31 + r as f32 * 0.095;
+                    icon(cx + 0.02, cy, 0.05, false);
+                    bx(cx + 0.05, cy - 0.010, cx + 0.42, cy + 0.010, line, 1);
                 }
             }
-        }
-        6 => {
-            painter.rect_filled(rect, 3.0, dim);
-            let cw = rect.width() / 4.0;
-            for r in 0..3 {
-                for c in 0..4 {
-                    let center = egui::pos2(
-                        rect.min.x + cw * (c as f32 + 0.5),
-                        rect.min.y + 15.0 + r as f32 * 21.0,
-                    );
-                    painter.rect_filled(
-                        egui::Rect::from_center_size(center, egui::vec2(13.0, 13.0)),
-                        3.0,
-                        ink,
-                    );
-                    painter.rect_filled(
-                        egui::Rect::from_center_size(center + egui::vec2(0.0, 10.0), egui::vec2(15.0, 2.0)),
-                        1.0,
-                        line,
-                    );
-                }
-            }
+            footer(0.90);
         }
         _ => {
-            painter.rect_filled(rect, 2.0, dim);
-            for r in 0..5 {
-                painter.rect_filled(
-                    egui::Rect::from_min_size(rect.min + egui::vec2(6.0, 8.0 + r as f32 * 14.0), egui::vec2(14.0, 10.0)),
-                    1.0,
-                    ink,
-                );
-                painter.rect_filled(
-                    egui::Rect::from_min_size(rect.min + egui::vec2(24.0, 11.0 + r as f32 * 14.0), egui::vec2(rect.width() - 30.0, 4.0)),
-                    1.0,
-                    line,
-                );
+            bx(0.03, 0.05, 0.97, 0.95, panel, 2);
+            bx(0.30, 0.10, 0.70, 0.19, panel_hi, 5);
+            for r in 0..2 {
+                for c in 0..5 {
+                    icon(0.20 + c as f32 * 0.15, 0.34 + r as f32 * 0.21, 0.065, true);
+                }
             }
+            bx(0.43, 0.79, 0.57, 0.84, panel_hi, 4);
         }
     }
 }
