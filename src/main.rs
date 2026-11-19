@@ -48,6 +48,8 @@ struct Config {
     alpha: u8,
     show_search: bool,
     tiles: bool,
+    #[serde(default)]
+    recent: Vec<String>,
 }
 
 impl Default for Config {
@@ -58,6 +60,7 @@ impl Default for Config {
             alpha: 242,
             show_search: true,
             tiles: true,
+            recent: Vec::new(),
         }
     }
 }
@@ -388,14 +391,92 @@ fn menu_size(style: usize) -> (f32, f32) {
         0 => (430.0, 560.0),
         1 => (480.0, 590.0),
         2 => (520.0, 600.0),
-        3 => (660.0, 620.0),
-        _ => (640.0, 600.0),
+        3 => (660.0, 700.0),
+        _ => (640.0, 680.0),
     }
 }
 
 fn monitor_size(ctx: &egui::Context) -> egui::Vec2 {
     ctx.input(|i| i.viewport().monitor_size)
         .unwrap_or(egui::vec2(1920.0, 1080.0))
+}
+
+/// Снимок экрана под меню — из него делаем размытый фон в духе акрила Windows.
+fn capture_backdrop(x: i32, y: i32, w: i32, h: i32) -> Option<egui::ColorImage> {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS,
+        HGDIOBJ, SRCCOPY,
+    };
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    unsafe {
+        let screen = GetDC(std::ptr::null_mut());
+        if screen.is_null() {
+            return None;
+        }
+        let mem = CreateCompatibleDC(screen);
+        let bmp = CreateCompatibleBitmap(screen, w, h);
+        let old = SelectObject(mem, bmp as HGDIOBJ);
+        let ok = BitBlt(mem, 0, 0, w, h, screen, x, y, SRCCOPY);
+
+        let mut bi: BITMAPINFO = std::mem::zeroed();
+        bi.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: 0,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        };
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        GetDIBits(
+            mem,
+            bmp,
+            0,
+            h as u32,
+            buf.as_mut_ptr() as *mut c_void,
+            &mut bi,
+            DIB_RGB_COLORS,
+        );
+
+        SelectObject(mem, old);
+        DeleteObject(bmp as HGDIOBJ);
+        DeleteDC(mem);
+        ReleaseDC(std::ptr::null_mut(), screen);
+
+        if ok == 0 {
+            return None;
+        }
+
+        // уменьшаем в 20 раз: при растягивании обратно получается мягкое размытие
+        let step = 20usize;
+        let ow = (w as usize / step).max(1);
+        let oh = (h as usize / step).max(1);
+        let mut rgba = Vec::with_capacity(ow * oh * 4);
+        for yy in 0..oh {
+            for xx in 0..ow {
+                let i = ((yy * step) * w as usize + xx * step) * 4;
+                if i + 3 < buf.len() {
+                    rgba.extend_from_slice(&[buf[i + 2], buf[i + 1], buf[i], 255]);
+                }
+            }
+        }
+        if rgba.len() != ow * oh * 4 {
+            return None;
+        }
+        Some(egui::ColorImage::from_rgba_unmultiplied(
+            [ow, oh],
+            &rgba,
+        ))
+    }
 }
 
 /// Скруглить окно: DWM в Windows 11, плюс регион — на случай, если DWM отказал.
@@ -557,7 +638,11 @@ struct App {
     opened_at: Instant,
     focus_search: bool,
     was_focused: bool,
+    focused_at: Instant,
     autostart: bool,
+    all_apps: bool,
+    power_open: bool,
+    backdrop: Option<egui::TextureHandle>,
     page: usize,
     quit: bool,
 }
@@ -576,6 +661,18 @@ impl App {
                 }
             }
         }
+        // иконки-глифы Windows (лупа, шеврон, питание, шестерёнка)
+        let icons = std::fs::read(r"C:\Windows\Fonts\segmdl2.ttf")
+            .or_else(|_| std::fs::read(r"C:\Windows\Fonts\SegoeIcons.ttf"));
+        if let Ok(bytes) = icons {
+            fonts.font_data.insert(
+                "mdl2".into(),
+                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                list.push("mdl2".into());
+            }
+        }
         cc.egui_ctx.set_fonts(fonts);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         start_hook(cc.egui_ctx.clone());
@@ -592,7 +689,11 @@ impl App {
             opened_at: Instant::now(),
             focus_search: false,
             was_focused: false,
+            focused_at: Instant::now(),
             autostart: autostart_enabled(),
+            all_apps: false,
+            power_open: false,
+            backdrop: None,
             page: 0,
             quit: false,
         };
@@ -626,6 +727,9 @@ impl App {
         self.opened_at = Instant::now();
         self.focus_search = self.cfg.show_search;
         self.was_focused = false;
+        self.focused_at = Instant::now();
+        self.all_apps = false;
+        self.power_open = false;
         self.query.clear();
         let (w, h) = menu_size(self.cfg.style);
         let m = monitor_size(ctx);
@@ -635,6 +739,9 @@ impl App {
             12.0
         };
         let y = (m.y - h - 56.0).max(8.0);
+        self.backdrop = capture_backdrop(x as i32, y as i32, w as i32, h as i32).map(|img| {
+            ctx.load_texture("backdrop", img, egui::TextureOptions::LINEAR)
+        });
         use egui::ViewportCommand as V;
         for cmd in [
             V::Decorations(false),
@@ -690,15 +797,38 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
+    fn remember(&mut self, target: &str) {
+        self.cfg.recent.retain(|t| t != target);
+        self.cfg.recent.insert(0, target.to_string());
+        self.cfg.recent.truncate(6);
+        self.save();
+    }
+
+    fn recent_indices(&self) -> Vec<usize> {
+        self.cfg
+            .recent
+            .iter()
+            .filter_map(|t| self.apps.iter().position(|a| &a.target == t))
+            .take(6)
+            .collect()
+    }
+
     fn menu_ui(&mut self, ctx: &egui::Context) {
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
         if focused {
+            if !self.was_focused {
+                self.focused_at = Instant::now();
+            }
             self.was_focused = true;
         } else if !self.was_focused && self.opened_at.elapsed().as_millis() < 900 {
             force_foreground();
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
-        if self.was_focused && !focused && self.opened_at.elapsed().as_millis() > 400 {
+        if self.was_focused
+            && !focused
+            && self.opened_at.elapsed().as_millis() > 400
+            && self.focused_at.elapsed().as_millis() > 250
+        {
             self.hide(ctx);
             return;
         }
@@ -709,27 +839,53 @@ impl App {
 
         let modern = self.cfg.style >= 3;
         let t = theme(self.cfg.dark, self.cfg.alpha);
-        let margin = if modern { 18 } else { 10 };
-        let cols = if modern { 6 } else { 4 };
-        let tile_w = if modern { 96.0 } else { 88.0 };
-        let tile_h = if modern { 84.0 } else { 84.0 };
+        let margin = if modern { 24 } else { 10 };        let cols = if modern { 6 } else { 4 };
+        let tile_w = if modern { 98.0 } else { 88.0 };
+        let tile_h = if modern { 86.0 } else { 84.0 };
+        let user = std::env::var("USERNAME").unwrap_or_default();
+
+        let mut launch: Option<String> = None;
+        let mut open_settings = false;
+
+        if let Some(tex) = &self.backdrop {
+            let full = ctx.screen_rect();
+            ctx.layer_painter(egui::LayerId::background())
+                .image(
+                    tex.id(),
+                    full,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+        }
+        let bg = if self.backdrop.is_some() {
+            if self.cfg.dark {
+                egui::Color32::from_rgba_unmultiplied(0x1c, 0x1c, 0x1c, 228)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(0xf3, 0xf3, 0xf3, 232)
+            }
+        } else {
+            t.bg
+        };
 
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
-                    .fill(t.bg)
-                    .inner_margin(egui::Margin::same(margin)),
+                    .fill(bg)
+                    .inner_margin(egui::Margin {
+                        left: margin,
+                        right: margin,
+                        top: 18,
+                        bottom: 12,
+                    }),
             )
             .show(ctx, |ui| {
                 if !modern {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("OpenStart11")
-                                .color(t.accent)
-                                .size(15.0)
-                                .strong(),
-                        );
-                    });
+                    ui.label(
+                        egui::RichText::new("OpenStart11")
+                            .color(t.accent)
+                            .size(15.0)
+                            .strong(),
+                    );
                     ui.add_space(6.0);
                 }
 
@@ -738,7 +894,7 @@ impl App {
                     egui::Frame::NONE
                         .fill(t.card)
                         .stroke(egui::Stroke::new(1.0, t.card_hi))
-                        .corner_radius(egui::CornerRadius::same(6))
+                        .corner_radius(egui::CornerRadius::same(5))
                         .inner_margin(egui::Margin {
                             left: 12,
                             right: 12,
@@ -747,28 +903,15 @@ impl App {
                         })
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                // лупа
-                                let (r, _) = ui.allocate_exact_size(
-                                    egui::vec2(14.0, 14.0),
-                                    egui::Sense::hover(),
+                                ui.label(
+                                    egui::RichText::new("\u{E721}")
+                                        .font(egui::FontId::proportional(13.0))
+                                        .color(t.muted),
                                 );
-                                let c = r.center();
-                                ui.painter().circle_stroke(
-                                    c,
-                                    5.0,
-                                    egui::Stroke::new(1.4, t.muted),
-                                );
-                                ui.painter().line_segment(
-                                    [
-                                        c + egui::vec2(3.5, 3.5),
-                                        c + egui::vec2(7.0, 7.0),
-                                    ],
-                                    egui::Stroke::new(1.4, t.muted),
-                                );
-                                ui.add_space(4.0);
+                                ui.add_space(6.0);
                                 resp = Some(ui.add(
                                     egui::TextEdit::singleline(&mut self.query)
-                                        .hint_text("Поиск приложений")
+                                        .hint_text("Поиск приложений, параметров и документов")
                                         .desired_width(f32::INFINITY)
                                         .frame(false),
                                 ));
@@ -780,7 +923,7 @@ impl App {
                             self.focus_search = false;
                         }
                     }
-                    ui.add_space(14.0);
+                    ui.add_space(16.0);
                 }
 
                 let q = self.query.trim().to_lowercase();
@@ -792,21 +935,86 @@ impl App {
                     .map(|(i, _)| i)
                     .collect();
 
-                let mut launch: Option<String> = None;
-                let mut open_settings = false;
+                let scroll_h = (ui.available_height() - 44.0).max(80.0);
 
-                if q.is_empty() && self.cfg.tiles {
-                    ui.label(
-                        egui::RichText::new("Закреплено")
-                            .size(13.0)
-                            .strong()
-                            .color(t.text),
-                    );
+                if !q.is_empty() {
+                    egui::ScrollArea::vertical()
+                        .id_salt("results")
+                        .auto_shrink([false, false])
+                        .max_height(scroll_h)
+                        .show(ui, |ui| {
+                            for &idx in &matching {
+                                if row(ui, &self.apps[idx], &t).clicked() {
+                                    launch = Some(self.apps[idx].target.clone());
+                                }
+                            }
+                        });
+                } else if self.all_apps {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("\u{E72B}")
+                                        .font(egui::FontId::proportional(13.0))
+                                        .color(t.text),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
+                            self.all_apps = false;
+                        }
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Все приложения")
+                                .size(13.0)
+                                .strong()
+                                .color(t.text),
+                        );
+                    });
                     ui.add_space(8.0);
-                    let take = (cols * 2).min(matching.len());
+                    egui::ScrollArea::vertical()
+                        .id_salt("all")
+                        .auto_shrink([false, false])
+                        .max_height((ui.available_height() - 44.0).max(80.0))
+                        .show(ui, |ui| {
+                            for &idx in &matching {
+                                if row(ui, &self.apps[idx], &t).clicked() {
+                                    launch = Some(self.apps[idx].target.clone());
+                                }
+                            }
+                        });
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Закреплено")
+                                .size(12.5)
+                                .strong()
+                                .color(t.text),
+                        );
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                let btn = egui::Button::new(
+                                    egui::RichText::new(format!(
+                                        "Все приложения  \u{E76C}"
+                                    ))
+                                    .size(12.0)
+                                    .color(t.muted),
+                                )
+                                .frame(false);
+                                if ui.add(btn).clicked() {
+                                    self.all_apps = true;
+                                }
+                            },
+                        );
+                    });
+                    ui.add_space(8.0);
+
+                    let take = (cols * 3).min(matching.len());
                     egui::Grid::new("pins")
                         .num_columns(cols)
-                        .spacing([4.0, 6.0])
+                        .spacing([4.0, 4.0])
                         .show(ui, |ui| {
                             for (n, &idx) in matching.iter().take(take).enumerate() {
                                 if tile(ui, &self.apps[idx], &t, tile_w, tile_h).clicked() {
@@ -817,34 +1025,46 @@ impl App {
                                 }
                             }
                         });
-                    ui.add_space(10.0);
+
+                    ui.add_space(16.0);
                     ui.label(
-                        egui::RichText::new("Приложения")
-                            .size(13.0)
+                        egui::RichText::new("Рекомендуем")
+                            .size(12.5)
                             .strong()
                             .color(t.text),
                     );
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
+                    let recent = self.recent_indices();
+                    if recent.is_empty() {
+                        ui.label(
+                            egui::RichText::new("Недавние программы появятся здесь")
+                                .size(11.5)
+                                .color(t.muted),
+                        );
+                    } else {
+                        egui::Grid::new("recent")
+                            .num_columns(2)
+                            .spacing([10.0, 4.0])
+                            .show(ui, |ui| {
+                                for (n, idx) in recent.iter().enumerate() {
+                                    if rec_row(ui, &self.apps[*idx], &t).clicked() {
+                                        launch = Some(self.apps[*idx].target.clone());
+                                    }
+                                    if n % 2 == 1 {
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                    }
                 }
 
-                let rest_h = (ui.available_height() - 42.0).max(80.0);
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .max_height(rest_h)
-                    .show(ui, |ui| {
-                        for &idx in &matching {
-                            if row(ui, &self.apps[idx], &t).clicked() {
-                                launch = Some(self.apps[idx].target.clone());
-                            }
-                        }
-                    });
+                ui.add_space((ui.available_height() - 34.0).max(6.0));
 
-                ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     let (av, _) =
-                        ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
-                    ui.painter().circle_filled(av.center(), 13.0, t.card_hi);
-                    let user = std::env::var("USERNAME").unwrap_or_default();
+                        ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                    ui.painter()
+                        .circle_filled(av.center(), 14.0, t.card_hi);
                     ui.painter().text(
                         av.center(),
                         egui::Align2::CENTER_CENTER,
@@ -852,20 +1072,33 @@ impl App {
                         egui::FontId::proportional(12.0),
                         t.text,
                     );
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new(&user).size(12.5).color(t.text));
+                    ui.add_space(10.0);
+                    ui.label(egui::RichText::new(&user).size(13.0).color(t.text));
+
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new("Настройки").size(12.5).color(t.muted),
-                                    )
-                                    .frame(false),
+                            let power = ui.add(
+                                egui::Button::new(
+                                    egui::RichText::new("\u{E7E8}")
+                                        .font(egui::FontId::proportional(15.0))
+                                        .color(t.text),
                                 )
-                                .clicked()
-                            {
+                                .frame(false),
+                            );
+                            if power.clicked() {
+                                self.power_open = !self.power_open;
+                            }
+                            ui.add_space(10.0);
+                            let gear = ui.add(
+                                egui::Button::new(
+                                    egui::RichText::new("\u{E713}")
+                                        .font(egui::FontId::proportional(15.0))
+                                        .color(t.muted),
+                                )
+                                .frame(false),
+                            );
+                            if gear.clicked() {
                                 open_settings = true;
                             }
                         },
@@ -876,11 +1109,52 @@ impl App {
                     self.show_settings(ctx);
                 }
                 if let Some(target) = launch {
+                    self.remember(&target);
                     launch_target(&target);
                     self.hide(ctx);
                 }
             });
+
+        if self.power_open {
+            let pos = egui::pos2(12.0, 12.0);
+            egui::Area::new(egui::Id::new("power-menu"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(pos)
+                .show(ctx, |ui| {
+                    egui::Frame::NONE
+                        .fill(t.card)
+                        .stroke(egui::Stroke::new(1.0, t.card_hi))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(egui::Margin::same(8))
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                if ui.button("Спящий режим").clicked() {
+                                    let _ = std::process::Command::new("rundll32.exe")
+                                        .args(["powrprof.dll,SetSuspendState", "0,1,0"])
+                                        .creation_flags(0x08000000)
+                                        .spawn();
+                                    self.power_open = false;
+                                }
+                                if ui.button("Завершение работы").clicked() {
+                                    let _ = std::process::Command::new("shutdown")
+                                        .args(["/s", "/t", "0"])
+                                        .creation_flags(0x08000000)
+                                        .spawn();
+                                    self.power_open = false;
+                                }
+                                if ui.button("Перезагрузка").clicked() {
+                                    let _ = std::process::Command::new("shutdown")
+                                        .args(["/r", "/t", "0"])
+                                        .creation_flags(0x08000000)
+                                        .spawn();
+                                    self.power_open = false;
+                                }
+                            });
+                        });
+                });
+        }
     }
+
     fn settings_ui(&mut self, ctx: &egui::Context) {
         let mut changed = false;
         egui::SidePanel::left("nav")
@@ -1195,6 +1469,44 @@ fn tile(
         egui::pos2(rect.min.x + 3.0, rect.min.y + 48.0),
         galley,
         t.text,
+    );
+    resp
+}
+
+fn rec_row(ui: &mut egui::Ui, app: &AppEntry, t: &Theme) -> egui::Response {
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::click());
+    let painter = ui.painter().with_clip_rect(rect);
+    if resp.hovered() {
+        painter.rect_filled(rect, egui::CornerRadius::same(5), t.card_hi);
+    }
+    let icon = egui::Rect::from_min_size(
+        rect.min + egui::vec2(6.0, 5.0),
+        egui::vec2(28.0, 28.0),
+    );
+    if let Some(tex) = &app.icon {
+        painter.image(
+            tex.id(),
+            icon,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    } else {
+        painter.rect_filled(icon, egui::CornerRadius::same(6), avatar_color(&app.name));
+    }
+    painter.text(
+        egui::pos2(rect.min.x + 42.0, rect.min.y + 8.0),
+        egui::Align2::LEFT_TOP,
+        short(&app.name, 24),
+        egui::FontId::proportional(12.5),
+        t.text,
+    );
+    painter.text(
+        egui::pos2(rect.min.x + 42.0, rect.min.y + 24.0),
+        egui::Align2::LEFT_TOP,
+        "Недавно",
+        egui::FontId::proportional(10.5),
+        t.muted,
     );
     resp
 }
