@@ -37,7 +37,8 @@ who do not want a background service or a driver installed for it.
 ### Menu
 
 - Opens on **Win**, closes on **Win**, **Esc**, a click outside or when an app starts.
-- Pinned grid, full app list, recent apps and a search box in one window.
+- Pinned grid you choose: right-click an app to pin it, right-click again to unpin.
+  The order is kept.
 - Quick links on the right: Documents, Downloads, Music, Pictures, Control Panel,
   Settings, Run.
 - Power menu in the footer.
@@ -108,6 +109,7 @@ Settings are stored in `%APPDATA%\OpenStart\config.json`:
   "show_search": true,
   "tiles": true,
   "recent": [],
+  "pinned": [],
   "start_x": 559,
   "start_y": 745
 }

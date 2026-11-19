@@ -37,6 +37,8 @@ tiene y dibuja el menú por su cuenta.
   marcha (`OpenStart.exe --settings`).
 - **Configuración** — seis secciones con vistas previas de estilos, interruptores y un
   control deslizante. Todo se aplica al instante.
+- **Mosaicos fijados** — el clic derecho sobre una aplicación la fija o la suelta;
+  el orden es tuyo.
 - **Inicio automático** — un interruptor en *Administrar*; escribe una sola entrada `Run`
   del usuario.
 - **Los atajos Win funcionan** — Win+E, Win+R, Win+X y compañía pasan al sistema.
@@ -70,7 +72,7 @@ Otros iconos del área de notificación**.
 ## Configuración
 
 Los ajustes están en `%APPDATA%\OpenStart\config.json`: `style` (0–6), `dark`, `alpha`,
-`show_search`, `tiles`, `recent`, `start_x`/`start_y` (posición recordada del botón Inicio;
+`show_search`, `tiles`, `recent`, `pinned`, `start_x`/`start_y` (posición recordada del botón Inicio;
 bórrela para recalibrarla).
 
 ## Requisitos

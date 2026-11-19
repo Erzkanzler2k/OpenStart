@@ -37,6 +37,8 @@ présents dans Windows et dessine le menu elle-même.
   l'application en cours (`OpenStart.exe --settings`).
 - **Paramètres** — six sections avec aperçus des styles, interrupteurs et curseur. Tout
   s'applique immédiatement.
+- **Vignettes épinglées** — un clic droit sur une application l'épingle ou la détache ;
+  l'ordre est le tien.
 - **Démarrage automatique** — un interrupteur dans *Gestion* ; il écrit une seule entrée
   `Run` pour l’utilisateur.
 - **Les raccourcis Win fonctionnent** — Win+E, Win+R, Win+X et les autres passent au système.
@@ -70,7 +72,7 @@ Si l'icône est masquée, activez-la dans **Paramètres → Personnalisation →
 ## Configuration
 
 Les paramètres sont dans `%APPDATA%\OpenStart\config.json` : `style` (0–6), `dark`, `alpha`,
-`show_search`, `tiles`, `recent`, `start_x`/`start_y` (position mémorisée du bouton
+`show_search`, `tiles`, `recent`, `pinned`, `start_x`/`start_y` (position mémorisée du bouton
 Démarrer ; effacez-la pour la recalibrer).
 
 ## Prérequis

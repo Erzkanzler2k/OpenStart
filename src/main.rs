@@ -79,6 +79,9 @@ struct Config {
     start_x: i32,
     #[serde(default)]
     start_y: i32,
+    /// Закреплённые программы в порядке добавления.
+    #[serde(default)]
+    pinned: Vec<String>,
 }
 
 impl Default for Config {
@@ -92,6 +95,7 @@ impl Default for Config {
             recent: Vec::new(),
             start_x: 0,
             start_y: 0,
+            pinned: Vec::new(),
         }
     }
 }
@@ -335,6 +339,15 @@ fn walk_depth(dir: &Path, out: &mut BTreeMap<String, String>, depth: usize) {
         }
         out.entry(stem.to_string())
             .or_insert(p.display().to_string());
+    }
+}
+
+/// Правый клик по программе закрепляет её, повторный снимает.
+/// Решение возвращается наружу, чтобы не менять cfg под заимствованием.
+fn pin_toggle(resp: &egui::Response, cfg: &Config, app: &AppEntry, action: &mut Option<(String, bool)>) {
+    if resp.secondary_clicked() {
+        let pinned = cfg.pinned.iter().any(|t| t == &app.target);
+        *action = Some((app.target.clone(), !pinned));
     }
 }
 
@@ -792,6 +805,20 @@ mod tests {
     }
 
     #[test]
+    fn pinned_list_is_optional_in_old_config() {
+        let json = r#"{"style":3,"dark":true,"alpha":242,"show_search":true,"tiles":true}"#;
+        let cfg: Config = serde_json::from_str(json).expect("старый конфиг должен читаться");
+        assert!(cfg.pinned.is_empty());
+    }
+
+    #[test]
+    fn pinned_list_reads_from_config() {
+        let json = r#"{"style":3,"dark":true,"alpha":242,"show_search":true,"tiles":true,"pinned":["C:\\x.lnk"]}"#;
+        let cfg: Config = serde_json::from_str(json).expect("конфиг с закреплёнными");
+        assert_eq!(cfg.pinned, vec![r"C:\x.lnk".to_string()]);
+    }
+
+    #[test]
     fn default_config_is_windows_11() {
         let cfg = Config::default();
         assert_eq!(cfg.style, 3);
@@ -1218,6 +1245,28 @@ impl App {
         self.save();
     }
 
+    fn apply_pin(&mut self, action: Option<(String, bool)>) {
+        let Some((target, pin)) = action else {
+            return;
+        };
+        if pin {
+            if !self.cfg.pinned.contains(&target) {
+                self.cfg.pinned.push(target);
+            }
+        } else {
+            self.cfg.pinned.retain(|t| t != &target);
+        }
+        self.dirty = true;
+    }
+
+    fn pinned_indices(&self) -> Vec<usize> {
+        self.cfg
+            .pinned
+            .iter()
+            .filter_map(|t| self.apps.iter().position(|a| &a.target == t))
+            .collect()
+    }
+
     fn recent_indices(&self) -> Vec<usize> {
         self.cfg
             .recent
@@ -1246,6 +1295,8 @@ impl App {
         let q = self.query.trim().to_lowercase();
         let matching = self.matching();
 
+        let mut pin_action: Option<(String, bool)> = None;
+
         if !q.is_empty() {
             egui::ScrollArea::vertical()
                 .id_salt("results")
@@ -1262,8 +1313,10 @@ impl App {
                         if r.clicked() {
                             launch = Some(self.apps[idx].target.clone());
                         }
+                        pin_toggle(&r, &self.cfg, &self.apps[idx], &mut pin_action);
                     }
                 });
+            self.apply_pin(pin_action);
             return launch;
         }
 
@@ -1297,17 +1350,22 @@ impl App {
                 .max_height((ui.available_height() - 8.0).max(80.0))
                 .show(ui, |ui| {
                     for &idx in &matching {
-                        if row(ui, &self.apps[idx], t).clicked() {
+                        let r = row(ui, &self.apps[idx], t);
+                        if r.clicked() {
                             launch = Some(self.apps[idx].target.clone());
                         }
+                        pin_toggle(&r, &self.cfg, &self.apps[idx], &mut pin_action);
                     }
                 });
+            self.apply_pin(pin_action);
             return launch;
         }
 
+        let pins = self.pinned_indices();
+        let has_pins = !self.cfg.pinned.is_empty();
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("Закреплено")
+                egui::RichText::new(if has_pins { "Закреплено" } else { "Программы" })
                     .size(13.0)
                     .strong()
                     .color(t.text),
@@ -1328,20 +1386,28 @@ impl App {
         });
         ui.add_space(10.0);
 
-        let take = (cols * 3).min(matching.len());
+        let take = cols * 3;
+        let shown: Vec<usize> = if has_pins {
+            pins.iter().take(take).copied().collect()
+        } else {
+            matching.iter().take(take).copied().collect()
+        };
         egui::Grid::new("pins")
             .num_columns(cols)
             .spacing([4.0, 4.0])
             .show(ui, |ui| {
-                for (n, &idx) in matching.iter().take(take).enumerate() {
-                    if tile(ui, &self.apps[idx], t, tile_w, tile_h).clicked() {
+                for (n, &idx) in shown.iter().enumerate() {
+                    let r = tile(ui, &self.apps[idx], t, tile_w, tile_h);
+                    if r.clicked() {
                         launch = Some(self.apps[idx].target.clone());
                     }
+                    pin_toggle(&r, &self.cfg, &self.apps[idx], &mut pin_action);
                     if (n + 1) % cols == 0 {
                         ui.end_row();
                     }
                 }
             });
+        self.apply_pin(pin_action);
 
         ui.add_space(14.0);
         ui.label(

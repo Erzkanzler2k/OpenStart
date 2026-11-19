@@ -37,6 +37,8 @@ und zeichnet das Menü selbst.
   (`OpenStart.exe --settings`).
 - **Einstellungen** — sechs Bereiche mit Stilvorschauen, Schaltern und einem Regler. Alles
   wirkt sofort.
+- **Angeheftete Kacheln** — Rechtsklick auf eine App heftet sie an oder löst sie;
+  die Reihenfolge ist deine.
 - **Autostart** — ein Schalter unter *Verwalten*; er setzt genau einen `Run`-Eintrag
   für den Benutzer.
 - **Win-Kombinationen bleiben** — Win+E, Win+R, Win+X und weitere gehen ans System.
@@ -71,7 +73,7 @@ Symbole im Infobereich** aktivieren.
 ## Konfiguration
 
 Einstellungen liegen in `%APPDATA%\OpenStart\config.json`: `style` (0–6), `dark`, `alpha`,
-`show_search`, `tiles`, `recent`, `start_x`/`start_y` (gemerkte Position der
+`show_search`, `tiles`, `recent`, `pinned`, `start_x`/`start_y` (gemerkte Position der
 Start-Schaltfläche; löschen, um sie neu zu lernen).
 
 ## Voraussetzungen

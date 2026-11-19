@@ -27,6 +27,7 @@
   按钮位置。
 - **真实的程序** —— 读取开始菜单文件夹（所有用户和当前用户），显示真实图标，边输入边
   按名称搜索。
+- **固定磁贴** —— 右键点击程序即可固定或取消固定，顺序由你决定。
 - **七种样式** —— Windows 7、Modern、Windows 10、Windows 11、Windows App、Windows Pro、
   Windows 10X。每种都是从头绘制，而不是套皮肤。
 - **常驻托盘** —— 没有任务栏按钮，也不出现在 Alt+Tab 中。左键打开菜单，右键提供
@@ -64,7 +65,7 @@
 ## 配置
 
 设置位于 `%APPDATA%\OpenStart\config.json`：`style`（0–6）、`dark`、`alpha`、`show_search`、
-`tiles`、`recent`、`start_x`/`start_y`（记住的开始按钮位置；删除后可重新校准）。
+`tiles`、`recent`、`pinned`、`start_x`/`start_y`（记住的开始按钮位置；删除后可重新校准）。
 
 ## 系统要求
 
