@@ -577,6 +577,8 @@ fn start_hook(ctx: egui::Context) {
         }
     });
     std::thread::spawn(|| unsafe {
+        // прошлый экземпляр мог оставить Win «зажатым» синтетическим нажатием
+        send_win_up();
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_proc), std::ptr::null_mut(), 0);
         if hook.is_null() {
             return;
@@ -598,12 +600,29 @@ unsafe extern "system" fn kb_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
         let up = wparam as u32 == WM_KEYUP || wparam as u32 == WM_SYSKEYUP;
         let win_key = kb.vkCode == VK_LWIN || kb.vkCode == VK_RWIN;
 
-        if win_key && down {
-            if !WIN_DOWN.swap(true, Ordering::SeqCst) {
-                CHORD.store(false, Ordering::SeqCst);
-                *WIN_AT.lock().unwrap() = Some(Instant::now());
+        // Win глушим всегда, и нажатие и отпускание: одиночный Win-up без
+        // проглоченного Win-down система считает тапом и открывает родное меню.
+        if win_key {
+            if down {
+                if !WIN_DOWN.swap(true, Ordering::SeqCst) {
+                    CHORD.store(false, Ordering::SeqCst);
+                    *WIN_AT.lock().unwrap() = Some(Instant::now());
+                }
+            } else if up && WIN_DOWN.swap(false, Ordering::SeqCst) {
+                if CHORD.swap(false, Ordering::SeqCst) {
+                    // парный up к синтетическому down, иначе Win остаётся зажатым
+                    send_win_up();
+                } else {
+                    let tap = WIN_AT
+                        .lock()
+                        .unwrap()
+                        .map(|t| t.elapsed().as_millis() < 700)
+                        .unwrap_or(false);
+                    if tap {
+                        TOGGLE.store(true, Ordering::SeqCst);
+                    }
+                }
             }
-            // нажатие Win глушим: иначе откроется родное меню Windows
             return 1;
         }
         if down && WIN_DOWN.load(Ordering::SeqCst) {
@@ -613,23 +632,25 @@ unsafe extern "system" fn kb_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
             }
             return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
         }
-        if win_key && up {
-            if !WIN_DOWN.swap(false, Ordering::SeqCst) {
-                return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
-            }
-            let tap = !CHORD.load(Ordering::SeqCst)
-                && WIN_AT
-                    .lock()
-                    .unwrap()
-                    .map(|t| t.elapsed().as_millis() < 700)
-                    .unwrap_or(false);
-            if tap {
-                TOGGLE.store(true, Ordering::SeqCst);
-            }
-            return 1;
-        }
     }
     CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+}
+
+/// Синтетическое отпускание Win — закрывает состояние, открытое send_win_down.
+unsafe fn send_win_up() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+    };
+    let mut input: INPUT = std::mem::zeroed();
+    input.r#type = INPUT_KEYBOARD;
+    input.Anonymous.ki = KEYBDINPUT {
+        wVk: VK_LWIN as u16,
+        wScan: 0,
+        dwFlags: KEYEVENTF_KEYUP,
+        time: 0,
+        dwExtraInfo: 1,
+    };
+    SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
 }
 
 /// Синтетическое нажатие Win, чтобы сочетания вроде Win+E продолжали работать.

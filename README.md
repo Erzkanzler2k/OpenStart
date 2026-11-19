@@ -1,115 +1,119 @@
 # OpenStart
 
-Самостоятельное меню «Пуск» для Windows 10/11: свой перехват клавиши Win, свои
-стили, свой поиск. Ничего стороннего не требует и реестр не трогает.
+<div align="center">
 
-Один exe на Rust, без установки и служб.
+**A Start menu for Windows 10/11 — its own Win key hook, its own styles, its own search.**
 
-![Меню](docs/menu.png)
+[English](README.md) · [Русский](README.ru.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [中文](README.zh-CN.md) · [日本語](README.ja.md)
 
-## Что делает
+[![Release](https://img.shields.io/github/v/release/Erzkanzler2k/OpenStart?label=release&color=e0af68)](https://github.com/Erzkanzler2k/OpenStart/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)](#requirements)
+[![Rust](https://img.shields.io/badge/rust-1.75%2B-dea584)](#build-from-source)
+[![License](https://img.shields.io/badge/license-MIT-97ca00)](LICENSE)
 
-- **Открывается по Win** и закрывается по Win, Esc, клику мимо или запуску
-  программы. Работает без перезагрузки.
-- **Показывает ярлыки из меню «Пуск» Windows** (общая и пользовательская папки),
-  с настоящими иконками и поиском по названию.
-- **Запускает программы** по клику, включая «Параметры» (`ms-settings:`) и
-  «Проводник».
-- **Семь стилей**: Windows 7, Modern, Windows 10, Windows 11,
-  Windows App, Windows Pro, Windows 10X.
-  - Windows 7 / Modern / Windows 10 — узкое меню с сеткой закреплённых.
-  - Windows 11 — две колонки: слева поиск, закреплённые и «Рекомендуем»,
-    справа профиль и быстрые ссылки (Документы, Загрузки, Музыка, Изображения,
-    личная папка, Панель управления, Параметры, «Выполнить...»), внизу — питание.
-  - Windows App — полный список программ с поиском.
-  - Windows Pro — плоский список в две колонки, без плиток.
-  - Windows 10X — по центру поиск и сетка значков, ниже «Все приложения».
-  Углы скруглены, фон — размытый снимок экрана в духе акрила.
-- **Автозапуск при входе** — галочка в разделе «Управление».
-- **Сочетания Win+X работают**: Win нажимается через хук и отдаётся системе,
-  когда начинается сочетание (Win+E, Win+R и т.д. проверены).
+</div>
 
-![Настройки](docs/settings.png)
+![OpenStart menu](docs/menu.png)
 
-## Трей
+A single Rust executable. No installer, no services, no registry writes, nothing else
+required. It hooks the Win key, reads the shortcuts Windows already has, and draws the
+menu itself.
 
-Приложение работает в фоне и не занимает панель задач: кнопки в панели задач и
-окна в Alt+Tab нет, только значок в трее.
+## Features
 
-- Левый клик по значку — открыть меню.
-- Правый клик — «Открыть меню», «Настройки OpenStart», «Выход».
-- Значок переживает перезапуск `explorer`.
-- Второй экземпляр не запускается: `OpenStart.exe --settings` открывает настройки
-  в уже работающем приложении.
+- **Win to open, Win to close** — also Esc, a click outside, or launching an app.
+  No reboot, no shell replacement.
+- **Your real apps** — reads the Start Menu folders (all users and current user),
+  shows real icons, searches by name as you type.
+- **Seven styles** — Windows 7, Modern, Windows 10, Windows 11, Windows App,
+  Windows Pro, Windows 10X. Each one is drawn from scratch, not a skin.
+- **Tray resident** — no taskbar button, no Alt+Tab entry. Left click opens the menu,
+  right click gives *Open menu*, *Settings*, *Exit*. The icon survives an `explorer`
+  restart.
+- **One instance** — a second launch just opens settings in the running app
+  (`OpenStart.exe --settings`).
+- **Settings** — six sections with style previews, switches and a slider. Everything
+  applies immediately.
+- **Autostart** — a switch in *Manage*, no registry tinkering.
+- **Win chords still work** — Win+E, Win+R, Win+X and friends are forwarded to the
+  system.
 
-Если значка не видно, он спрятан в переполнении трея: «Параметры →
-Персонализация → Панель задач → Другие значки панели задач».
+| Styles | Settings |
+| --- | --- |
+| ![Styles](docs/settings.png) | ![Menu](docs/menu.png) |
 
-Настройки также открываются шестерёнкой в правом нижнем углу меню «Пуск».
+## Install
 
-## Настройки
+1. Download `OpenStart.exe` from [Releases](https://github.com/Erzkanzler2k/OpenStart/releases).
+2. Run it. The icon appears in the notification area.
+3. Press **Win** — the menu opens.
+4. Want it always available? Turn on *Launch at sign-in* in **Manage**.
 
-Файл `%APPDATA%\OpenStart\config.json`: стиль, тёмное/светлое, непрозрачность,
-поиск, плитки, список недавних программ. Окно настроек — с боковой панелью и
-шестью разделами: «Меню «Пуск»» с карточками стилей и превью, «Внешний вид»,
-«Цвета», «Поиск», «Управление», «О программе». Параметры собраны в группы-строки
-с переключателями и ползунками. Изменения применяются сразу.
+If the tray icon is hidden, enable it in **Settings → Personalization → Taskbar →
+Other system tray icons**.
 
-## Запуск
+## Usage
 
-Готовый `OpenStart.exe` — в [Releases](../../releases). Запустить, включить
-автозапуск в «Управлении» — и Win открывает меню вместо системного.
+| Action | How |
+| --- | --- |
+| Open / close the menu | **Win** |
+| Close without opening anything | **Esc**, click outside |
+| Open settings | Tray icon → *Settings*, or the gear in the menu footer |
+| Quit | Tray icon → *Exit*, or **Manage → Exit** |
+| Change style | *Start menu* section, click a card |
 
-Из исходников:
+## Requirements
+
+- Windows 10 or Windows 11 (x64).
+- No admin rights, no installer, no runtime.
+
+## Build from source
 
 ```powershell
 cargo build --release
 .\target\release\openstart.exe
 ```
 
-Нужен Rust 1.75+ и MSVC Build Tools.
+Rust 1.75+ with the MSVC toolchain.
 
-## Как это устроено
+## How it works
 
-- Низкоуровневый хук клавиатуры (`WH_KEYBOARD_LL`) ловит Win. Нажатие и отпускание
-  тапа глушатся, чтобы не открылось системное меню; при сочетании Win+X хук
-  синтетически «дожимает» Win через `SendInput`, чтобы система отработала
-  сочетание.
-- Окно меню — обычное окно egui без рамки, поверх остальных, внизу экрана. Окно
-  настроек — то же окно в другом режиме.
-- Список программ строится обходом папок меню «Пуск» (`.lnk`); иконки берутся
-  через оболочку Windows.
-- Фон меню — снимок экрана под ним, уменьшенный и растянутый обратно: выглядит
-  как акрил, но это статичная картинка, а не живое размытие.
-- Значок в трее — `Shell_NotifyIcon` со своим скрытым окном и меню; после
-  перезапуска `explorer` иконка добавляется заново по сообщению `TaskbarCreated`.
-- Один экземпляр — именованный мьютекс; повторный запуск сигналит именованным
-  событием и завершается.
-- Настройки применяются сразу, ничего не перезаписывается «при выходе».
-- Закрытие окна настроек приложение не завершает, «Выход» — в меню трея или
-  в «Управлении».
+- A low-level keyboard hook (`WH_KEYBOARD_LL`) catches Win. The tap is swallowed so
+  the system menu stays closed; when a chord starts, a synthetic Win keypress is sent
+  so the system handles it as usual.
+- The menu is a borderless egui window at the bottom of the screen. Settings reuse the
+  same window in another mode.
+- The app list is built by walking the Start Menu folders (`.lnk` files); icons come
+  from the Windows shell.
+- The backdrop is a screenshot of the desktop under the menu, downscaled and stretched
+  back — an acrylic look from a static image, not live blur.
+- The tray icon is `Shell_NotifyIcon` with its own hidden window and menu; after an
+  `explorer` restart it re-adds itself on `TaskbarCreated`.
+- Configuration lives in `%APPDATA%\OpenStart\config.json`.
 
-## Чего пока нет
+## Limitations
 
-- Замены панели задач (кнопка «Пуск» на панели остаётся системной; меню
-  вызывается клавишей Win и значком в трее).
-- Пункта в системном меню Win+X: Windows 11 не показывает пользовательские
-  ярлыки из `%LOCALAPPDATA%\Microsoft\Windows\WinX\Group3`.
-- UWP-программ без ярлыков в меню «Пуск».
-- Ручного закрепления и перетаскивания плиток.
-- Замены экрана блокировки, поиска по файлам и веб-поиска.
+- The taskbar is not replaced: the Start button stays system-owned, the menu is opened
+  by the Win key or the tray icon.
+- Windows 11 ignores custom shortcuts in `WinX\Group3`, so no Win+X entry is added.
+- No UWP apps that have no Start Menu shortcut.
+- No manual tile pinning or drag and drop.
+- No lock screen, file search or web search replacement.
 
-## Несовместимости
+## Known conflicts
 
-- Античиты и средства защиты, блокирующие глобальные хуки клавиатуры, могут
-  не дать перехватить Win.
-- Пока приложение запущено, Win не открывает системное меню — это его работа.
+- Anti-cheat and security software that blocks global keyboard hooks can stop the Win
+  key from being intercepted.
+- While OpenStart is running, Win opens this menu instead of the system one — that is
+  the point.
 
-## Статус
+## Status
 
-Проверено на Windows 11: открытие/закрытие по Win, поиск, запуск программ,
-переключение стилей, сохранение настроек, Win+E, значок в трее и меню по правому
-клику, перезапуск `explorer` с восстановлением значка, единственный экземпляр
-с `--settings`, сворачивание и разворачивание окна (рендерер wgpu — кадр не
-чернеет). Не проверено: поведение под другими раскладками, на Windows 10,
-на нескольких мониторах и при смене масштаба.
+Tested on Windows 11: opening and closing with Win, search, launching apps, switching
+styles, saving settings, Win+E, tray icon and its context menu, `explorer` restart,
+single instance with `--settings`. Not tested: other keyboard layouts, Windows 10,
+multiple monitors, DPI changes.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
