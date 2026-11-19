@@ -16,7 +16,7 @@
 
 ![OpenStart-Menü](docs/menu.png)
 
-Eine einzige Rust-Exe. Kein Installer, keine Dienste, keine Registry-Einträge, keine
+Eine einzige Rust-Exe. Kein Installer, keine Dienste, keine Admin-Rechte, keine
 Fremdsoftware. Die App hakt die Win-Taste ab, liest die vorhandenen Windows-Verknüpfungen
 und zeichnet das Menü selbst.
 
@@ -37,7 +37,8 @@ und zeichnet das Menü selbst.
   (`OpenStart.exe --settings`).
 - **Einstellungen** — sechs Bereiche mit Stilvorschauen, Schaltern und einem Regler. Alles
   wirkt sofort.
-- **Autostart** — ein Schalter unter *Verwalten*, ohne Registry-Bastelei.
+- **Autostart** — ein Schalter unter *Verwalten*; er setzt genau einen `Run`-Eintrag
+  für den Benutzer.
 - **Win-Kombinationen bleiben** — Win+E, Win+R, Win+X und weitere gehen ans System.
 
 | Stile | Einstellungen |

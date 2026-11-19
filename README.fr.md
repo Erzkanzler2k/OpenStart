@@ -16,7 +16,7 @@
 
 ![Menu OpenStart](docs/menu.png)
 
-Un seul exe en Rust. Pas d'installateur, pas de service, pas d'écriture dans le registre,
+Un seul exe en Rust. Pas d'installateur, pas de service, pas de droits administrateur,
 aucun logiciel tiers. L'application intercepte la touche Win, lit les raccourcis déjà
 présents dans Windows et dessine le menu elle-même.
 
@@ -37,7 +37,8 @@ présents dans Windows et dessine le menu elle-même.
   l'application en cours (`OpenStart.exe --settings`).
 - **Paramètres** — six sections avec aperçus des styles, interrupteurs et curseur. Tout
   s'applique immédiatement.
-- **Démarrage automatique** — un interrupteur dans *Gestion*, sans toucher au registre.
+- **Démarrage automatique** — un interrupteur dans *Gestion* ; il écrit une seule entrée
+  `Run` pour l’utilisateur.
 - **Les raccourcis Win fonctionnent** — Win+E, Win+R, Win+X et les autres passent au système.
 
 | Styles | Paramètres |

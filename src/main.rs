@@ -5,7 +5,8 @@
 //! ярлыки из пользовательского и общего меню «Пуск», ищет по ним и запускает их.
 //! Семь стилей (Windows 7 / Modern / Windows 10 / Windows 11 / Windows App / Windows Pro / Windows 10X)
 //! рисуются самим приложением. Настройки лежат в
-//! %APPDATA%\OpenStart\config.json. Реестр не используется.
+//! %APPDATA%\OpenStart\config.json. В реестр пишется только необязательный
+//! автозапуск (HKCU\...\Run), больше ничего.
 
 use std::collections::BTreeMap;
 use std::os::windows::process::CommandExt;
@@ -21,14 +22,13 @@ use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, FindWindowExW, FindWindowW, GetClassNameW, GetForegroundWindow, GetMessageW,
     GetWindowRect,
-    GetWindowTextW, GetWindowThreadProcessId, PostMessageW, SetForegroundWindow, SetWindowPos,
-    WM_CLOSE, SW_HIDE,
+    GetWindowTextW, GetWindowThreadProcessId, SetForegroundWindow, SetWindowPos, SW_HIDE,
     SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
     WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, BOOL, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT, RECT,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, POINT, RECT,
     WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Graphics::Gdi::{
@@ -43,8 +43,8 @@ use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyMenu, DestroyWindow, GetCursorPos, ICONINFO, MENU_ITEM_FLAGS, MF_SEPARATOR, MF_STRING,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DestroyMenu, DestroyWindow, GetCursorPos, MENU_ITEM_FLAGS, MF_SEPARATOR, MF_STRING,
     RegisterClassW, RegisterWindowMessageW, TrackPopupMenu, TPM_NONOTIFY, TPM_RETURNCMD,
     WNDCLASSW, WM_LBUTTONDBLCLK, WM_RBUTTONUP, HICON, IMAGE_ICON, LR_LOADFROMFILE,
     LoadImageW,
@@ -65,8 +65,6 @@ const STYLES: &[(&str, &str)] = &[
     ("Стиль Windows Pro", "Плоские списки без плиток"),
     ("Стиль Windows 10X", "Центрированные значки"),
 ];
-
-const NAV: &[&str] = &["Меню «Пуск»", "Управление", "О программе"];
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Config {
@@ -304,11 +302,18 @@ fn load_icon(target: &str) -> Option<egui::ColorImage> {
 }
 
 fn walk(dir: &Path, out: &mut BTreeMap<String, String>) {
+    walk_depth(dir, out, 0)
+}
+
+fn walk_depth(dir: &Path, out: &mut BTreeMap<String, String>, depth: usize) {
+    if depth > 8 {
+        return;
+    }
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
-            walk(&p, out);
+            walk_depth(&p, out, depth + 1);
             continue;
         }
         if !p
@@ -604,7 +609,6 @@ static START_ZONE: Mutex<Option<(i32, i32)>> = Mutex::new(None);
 static ZONE_DIRTY: AtomicBool = AtomicBool::new(false);
 static MOUSE_SWALLOW: AtomicBool = AtomicBool::new(false);
 static LAST_CLICK: Mutex<Option<(i32, i32, Instant)>> = Mutex::new(None);
-static START_FOUND: AtomicIsize = AtomicIsize::new(0);
 /// Наше меню сейчас на экране.
 static MENU_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// Системное меню закрыто — пора показать наше.
@@ -626,7 +630,8 @@ fn start_hook(ctx: egui::Context) {
     std::thread::spawn(|| {
         loop {
             std::thread::sleep(std::time::Duration::from_millis(10));
-            let fg = unsafe { foreground_class_and_title() };
+            let hwnd = unsafe { GetForegroundWindow() };
+            let fg = unsafe { foreground_class_and_title(hwnd) };
             let start_open = fg
                 .as_ref()
                 .map(|(class, title)| {
@@ -634,7 +639,7 @@ fn start_hook(ctx: egui::Context) {
                 })
                 .unwrap_or(false);
             if start_open {
-                unsafe { close_start_menu() };
+                unsafe { close_start_menu(hwnd) };
                 let click = *LAST_CLICK.lock().unwrap();
                 if let Some((x, y, at)) = click {
                     if at.elapsed().as_millis() < 1200 && taskbar_contains(x, y) {
@@ -660,7 +665,11 @@ fn start_hook(ctx: egui::Context) {
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_proc), std::ptr::null_mut(), 0);
         let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), std::ptr::null_mut(), 0);
         if hook.is_null() {
+            log_line("keyboard hook rejected: Win is not intercepted");
             return;
+        }
+        if mouse.is_null() {
+            log_line("mouse hook rejected: the Start button is not intercepted");
         }
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
@@ -833,20 +842,8 @@ fn is_start_title(title: &str) -> bool {
     )
 }
 
-/// Класс окна на переднем плане.
-unsafe fn foreground_class() -> String {
-    let hwnd = GetForegroundWindow();
-    if hwnd.is_null() {
-        return String::new();
-    }
-    let mut buf = [0u16; 128];
-    let n = GetClassNameW(hwnd, buf.as_mut_ptr(), 128) as usize;
-    String::from_utf16_lossy(&buf[..n.min(128)])
-}
-
-/// Класс и заголовок окна на переднем плане.
-unsafe fn foreground_class_and_title() -> Option<(String, String)> {
-    let hwnd = GetForegroundWindow();
+/// Класс и заголовок указанного окна.
+unsafe fn foreground_class_and_title(hwnd: HWND) -> Option<(String, String)> {
     if hwnd.is_null() {
         return None;
     }
@@ -860,16 +857,17 @@ unsafe fn foreground_class_and_title() -> Option<(String, String)> {
     ))
 }
 
-/// Закрывает системное меню «Пуск»: Esc активному окну и WM_CLOSE на всякий случай.
-unsafe fn close_start_menu() {
-    let hwnd = GetForegroundWindow();
-    if hwnd.is_null() {
+/// Закрывает системное меню «Пуск».
+unsafe fn close_start_menu(hwnd: HWND) {
+    // за время проверки на передний план могло выйти другое окно — его не трогаем
+    if hwnd.is_null() || hwnd != GetForegroundWindow() {
         return;
     }
-    // сначала мгновенно прячем окно, потом закрываем по-настоящему
-    ShowWindow(hwnd, SW_HIDE);
-    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    // Esc — штатное закрытие, оболочка остаётся в рабочем состоянии.
+    // SW_HIDE только убирает окно с экрана до конца анимации; WM_CLOSE не шлём:
+    // он убивает ShellExperienceHost, и системное «Пуск» перестаёт открываться.
     send_escape();
+    ShowWindow(hwnd, SW_HIDE);
 }
 
 unsafe fn send_escape() {
@@ -1021,6 +1019,9 @@ struct App {
     power_open: bool,
     was_minimized: bool,
     setting_filter: String,
+    /// Настройки изменены, но ещё не записаны на диск.
+    dirty: bool,
+    saved_at: Instant,
     /// Выбранная строка в результатах поиска.
     sel: usize,
     sel_query: String,
@@ -1083,6 +1084,8 @@ impl App {
             power_open: false,
             was_minimized: false,
             setting_filter: String::new(),
+            dirty: false,
+            saved_at: Instant::now(),
             sel: 0,
             sel_query: String::new(),
             enter: false,
@@ -1108,7 +1111,12 @@ impl App {
             let _ = std::fs::create_dir_all(dir);
         }
         if let Ok(text) = serde_json::to_string_pretty(&self.cfg) {
-            let _ = std::fs::write(config_path(), text);
+            // пишем во временный файл и подменяем: обрыв не портит настройки
+            let path = config_path();
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, &path).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
         }
     }
 
@@ -1241,7 +1249,12 @@ impl App {
                 .show(ui, |ui| {
                     for (n, &idx) in matching.iter().enumerate() {
                         let chosen = !q.is_empty() && n == self.sel;
-                        if row_sel(ui, &self.apps[idx], t, chosen).clicked() {
+                        let r = row_sel(ui, &self.apps[idx], t, chosen);
+                        if chosen {
+                            // держим выбранную стрелками строку в поле зрения
+                            r.scroll_to_me(Some(egui::Align::Center));
+                        }
+                        if r.clicked() {
                             launch = Some(self.apps[idx].target.clone());
                         }
                     }
@@ -1362,7 +1375,7 @@ impl App {
         let mut resp = None;
         egui::Frame::NONE
             .fill(t.card)
-            .stroke(egui::Stroke::new(1.0, t.card_hi))
+            .stroke(egui::Stroke::new(1.0f32, t.card_hi))
             .corner_radius(egui::CornerRadius::same(if round { 20 } else { 6 }))
             .inner_margin(egui::Margin {
                 left: 14,
@@ -1870,7 +1883,7 @@ impl App {
                         ui.painter().vline(
                             line.center().x,
                             line.y_range(),
-                            egui::Stroke::new(1.0, t.card_hi),
+                            egui::Stroke::new(1.0f32, t.card_hi),
                         );
                         ui.add_space(18.0);
 
@@ -1991,7 +2004,7 @@ impl App {
                 .show(ctx, |ui| {
                     egui::Frame::NONE
                         .fill(t.card)
-                        .stroke(egui::Stroke::new(1.0, t.card_hi))
+                        .stroke(egui::Stroke::new(1.0f32, t.card_hi))
                         .corner_radius(egui::CornerRadius::same(6))
                         .inner_margin(egui::Margin::same(8))
                         .show(ui, |ui| {
@@ -2046,7 +2059,7 @@ impl App {
                 ui.add_space(10.0);
 
                 egui::Frame::NONE
-                    .stroke(egui::Stroke::new(1.0, PANEL_LINE))
+                    .stroke(egui::Stroke::new(1.0f32, PANEL_LINE))
                     .corner_radius(egui::CornerRadius::same(8))
                     .inner_margin(egui::Margin {
                         left: 12,
@@ -2119,7 +2132,7 @@ impl App {
             });
 
         if changed {
-            self.save();
+            self.dirty = true;
         }
     }
 
@@ -3101,6 +3114,12 @@ impl eframe::App for App {
         }
         if self.visible {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+
+        if self.dirty && self.saved_at.elapsed().as_millis() > 400 {
+            self.dirty = false;
+            self.saved_at = Instant::now();
+            App::save(self);
         }
 
         if ZONE_DIRTY.swap(false, Ordering::SeqCst) {

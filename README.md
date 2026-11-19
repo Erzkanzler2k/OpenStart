@@ -16,7 +16,7 @@
 
 ![OpenStart menu](docs/menu.png)
 
-One Rust executable. No installer, no services, no registry writes, nothing else required.
+One Rust executable. No installer, no services, no admin rights, nothing else required.
 It takes the Win key, reads the shortcuts Windows already has and draws the menu itself.
 
 Built for people who want a Start menu that looks and behaves the way they choose — and
@@ -69,7 +69,8 @@ who do not want a background service or a driver installed for it.
   *Exit*.
 - One instance: a second launch only opens settings in the running app
   (`OpenStart.exe --settings`).
-- Optional launch at sign-in, no registry tinkering.
+- Optional launch at sign-in; that single switch writes one per-user `Run` entry and
+  nothing else.
 - If a log entry is needed, `%APPDATA%\OpenStart\openstart.log` keeps the start line and
   any panic.
 
