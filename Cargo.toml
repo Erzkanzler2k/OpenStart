@@ -1,10 +1,10 @@
 [package]
 name = "openstart11"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 
 [dependencies]
-eframe = "0.31"
+eframe = { version = "0.31", features = ["wgpu"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 windows-sys = { version = "0.59", features = [

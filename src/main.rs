@@ -479,10 +479,9 @@ fn capture_backdrop(x: i32, y: i32, w: i32, h: i32) -> Option<egui::ColorImage> 
     }
 }
 
-/// Скруглить окно: DWM в Windows 11, плюс регион — на случай, если DWM отказал.
-fn round_window(w: i32, h: i32) {
+/// Скруглить окно средствами DWM (Windows 11).
+fn round_window(_w: i32, _h: i32) {
     use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
-    use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
     let title: Vec<u16> = "OpenStart11\0".encode_utf16().collect();
     unsafe {
         let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
@@ -492,13 +491,14 @@ fn round_window(w: i32, h: i32) {
         // DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2
         let round: u32 = 2;
         DwmSetWindowAttribute(hwnd, 33, &round as *const u32 as *const _, 4);
+    }
+}
 
-        if w > 0 && h > 0 {
-            let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, 18, 18);
-            if !rgn.is_null() {
-                SetWindowRgn(hwnd, rgn, 1);
-            }
-        }
+fn is_minimized_now() -> bool {
+    let title: Vec<u16> = "OpenStart11\0".encode_utf16().collect();
+    unsafe {
+        let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+        !hwnd.is_null() && windows_sys::Win32::UI::WindowsAndMessaging::IsIconic(hwnd) != 0
     }
 }
 
@@ -642,6 +642,7 @@ struct App {
     autostart: bool,
     all_apps: bool,
     power_open: bool,
+    was_minimized: bool,
     backdrop: Option<egui::TextureHandle>,
     page: usize,
     quit: bool,
@@ -693,6 +694,7 @@ impl App {
             autostart: autostart_enabled(),
             all_apps: false,
             power_open: false,
+            was_minimized: false,
             backdrop: None,
             page: 0,
             quit: false,
@@ -761,15 +763,6 @@ impl App {
     fn show_settings(&mut self, ctx: &egui::Context) {
         self.mode = Mode::Settings;
         self.visible = true;
-        // снять скругление от меню, иначе окно настроек останется обрезанным
-        unsafe {
-            use windows_sys::Win32::Graphics::Gdi::SetWindowRgn;
-            let title: Vec<u16> = "OpenStart11\0".encode_utf16().collect();
-            let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-            if !hwnd.is_null() {
-                SetWindowRgn(hwnd, std::ptr::null_mut(), 1);
-            }
-        }
         self.center_settings(ctx);
         use egui::ViewportCommand as V;
         for cmd in [
@@ -994,23 +987,27 @@ impl App {
     }
 
     fn menu_ui(&mut self, ctx: &egui::Context) {
+        let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
-        if focused {
-            if !self.was_focused {
-                self.focused_at = Instant::now();
+        if !minimized {
+            if focused {
+                if !self.was_focused {
+                    self.focused_at = Instant::now();
+                }
+                self.was_focused = true;
+            } else if !self.was_focused && self.opened_at.elapsed().as_millis() < 900 {
+                force_foreground();
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
             }
-            self.was_focused = true;
-        } else if !self.was_focused && self.opened_at.elapsed().as_millis() < 900 {
-            force_foreground();
-            ctx.request_repaint_after(std::time::Duration::from_millis(50));
-        }
-        if self.was_focused
-            && !focused
-            && self.opened_at.elapsed().as_millis() > 400
-            && self.focused_at.elapsed().as_millis() > 250
-        {
-            self.hide(ctx);
-            return;
+            if self.was_focused
+                && !focused
+                && self.opened_at.elapsed().as_millis() > 400
+                && self.focused_at.elapsed().as_millis() > 250
+                && !is_minimized_now()
+            {
+                self.hide(ctx);
+                return;
+            }
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.hide(ctx);
@@ -1713,6 +1710,19 @@ fn row(ui: &mut egui::Ui, app: &AppEntry, t: &Theme) -> egui::Response {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // после сворачивания/разворачивания текстура фона недействительна,
+        // а окно может остаться с чёрным кадром — заставляем перерисовать
+        let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+        if minimized != self.was_minimized {
+            self.was_minimized = minimized;
+            if !minimized {
+                ctx.request_repaint();
+            }
+        }
+        if self.visible {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+
         if TOGGLE.swap(false, Ordering::SeqCst) {
             if self.visible && self.mode == Mode::Menu {
                 self.hide(ctx);
@@ -1741,6 +1751,7 @@ impl eframe::App for App {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 640.0])
             .with_resizable(false)
