@@ -20,7 +20,8 @@ use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, FindWindowW, GetClassNameW, GetForegroundWindow, GetMessageW, GetWindowRect,
-    GetWindowThreadProcessId, PostMessageW, SetForegroundWindow, SetWindowPos, WM_CLOSE,
+    GetWindowTextW, GetWindowThreadProcessId, PostMessageW, SetForegroundWindow, SetWindowPos,
+    WM_CLOSE,
     SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, MSG,
     WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -579,8 +580,10 @@ static ZONE_DIRTY: AtomicBool = AtomicBool::new(false);
 static MOUSE_SWALLOW: AtomicBool = AtomicBool::new(false);
 static LAST_CLICK: Mutex<Option<(i32, i32, Instant)>> = Mutex::new(None);
 static START_FOUND: AtomicIsize = AtomicIsize::new(0);
-/// 0 — ждём клик, 1 — закрываем системное меню, 2 — показываем своё.
-static WATCH_STATE: Mutex<Option<(u8, Instant, i32, i32)>> = Mutex::new(None);
+/// Наше меню сейчас на экране.
+static MENU_VISIBLE: AtomicBool = AtomicBool::new(false);
+/// Системное меню закрыто — пора показать наше.
+static SHOW_PENDING: AtomicBool = AtomicBool::new(false);
 
 fn start_hook(ctx: egui::Context) {
     // Хук не должен трогать egui: если обработчик задержится, Windows снимет хук.
@@ -593,44 +596,36 @@ fn start_hook(ctx: egui::Context) {
             }
         }
     });
-    // клик по системной кнопке «Пуск»: если позицию ещё не знаем, закрываем
-    // только что открывшееся системное меню и запоминаем кнопку
+    // системное меню «Пуск» не должно открываться, пока работаем мы:
+    // закрываем его сразу, как только оно появилось
     std::thread::spawn(|| {
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(40));
-            let state = *WATCH_STATE.lock().unwrap();
-            match state {
-                Some((1, at, x, y)) => {
-                    if at.elapsed().as_millis() >= 150 {
-                        unsafe { close_start_menu() };
-                        *WATCH_STATE.lock().unwrap() = Some((2, Instant::now(), x, y));
-                    }
-                }
-                Some((2, at, x, y)) => {
-                    let fg = unsafe { foreground_class() };
-                    if fg != "Windows.UI.Core.CoreWindow" || at.elapsed().as_millis() > 500 {
-                        *WATCH_STATE.lock().unwrap() = None;
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            let fg = unsafe { foreground_class_and_title() };
+            let start_open = fg
+                .as_ref()
+                .map(|(class, title)| {
+                    class == "Windows.UI.Core.CoreWindow" && is_start_title(title)
+                })
+                .unwrap_or(false);
+            if start_open {
+                unsafe { close_start_menu() };
+                let click = *LAST_CLICK.lock().unwrap();
+                if let Some((x, y, at)) = click {
+                    if at.elapsed().as_millis() < 1200 && taskbar_contains(x, y) {
                         *START_ZONE.lock().unwrap() = Some((x, y));
                         ZONE_DIRTY.store(true, Ordering::SeqCst);
-                        *LAST_CLICK.lock().unwrap() = None;
-                        TOGGLE.store(true, Ordering::SeqCst);
-                        wake();
                     }
                 }
-                _ => {
-                    let click = *LAST_CLICK.lock().unwrap();
-                    let Some((x, y, at)) = click else { continue };
-                    if at.elapsed().as_millis() > 1200 {
-                        continue;
-                    }
-                    if !taskbar_contains(x, y) {
-                        continue;
-                    }
-                    if unsafe { foreground_class() } != "Windows.UI.Core.CoreWindow" {
-                        continue;
-                    }
-                    *WATCH_STATE.lock().unwrap() = Some((1, Instant::now(), x, y));
+                if !MENU_VISIBLE.load(Ordering::SeqCst) {
+                    SHOW_PENDING.store(true, Ordering::SeqCst);
                 }
+                continue;
+            }
+            // системное меню закрылось — показываем своё, ровно один раз
+            if SHOW_PENDING.swap(false, Ordering::SeqCst) {
+                TOGGLE.store(true, Ordering::SeqCst);
+                wake();
             }
         }
     });
@@ -703,6 +698,15 @@ fn taskbar_contains(x: i32, y: i32) -> bool {
     }
 }
 
+/// Заголовки системного меню «Пуск» в разных языках.
+fn is_start_title(title: &str) -> bool {
+    matches!(
+        title,
+        "Пуск" | "Start" | "Démarrer" | "Startmenü" | "Inicio" | "Avvio" | "Początek" | "开始"
+            | "スタート" | "시작" | "Začínáme"
+    )
+}
+
 /// Класс окна на переднем плане.
 unsafe fn foreground_class() -> String {
     let hwnd = GetForegroundWindow();
@@ -712,6 +716,22 @@ unsafe fn foreground_class() -> String {
     let mut buf = [0u16; 128];
     let n = GetClassNameW(hwnd, buf.as_mut_ptr(), 128) as usize;
     String::from_utf16_lossy(&buf[..n.min(128)])
+}
+
+/// Класс и заголовок окна на переднем плане.
+unsafe fn foreground_class_and_title() -> Option<(String, String)> {
+    let hwnd = GetForegroundWindow();
+    if hwnd.is_null() {
+        return None;
+    }
+    let mut cbuf = [0u16; 128];
+    let cn = GetClassNameW(hwnd, cbuf.as_mut_ptr(), 128) as usize;
+    let mut tbuf = [0u16; 128];
+    let tn = GetWindowTextW(hwnd, tbuf.as_mut_ptr(), 128) as usize;
+    Some((
+        String::from_utf16_lossy(&cbuf[..cn.min(128)]),
+        String::from_utf16_lossy(&tbuf[..tn.min(128)]),
+    ))
 }
 
 /// Закрывает системное меню «Пуск»: Esc активному окну и WM_CLOSE на всякий случай.
@@ -935,6 +955,7 @@ impl App {
     fn show_menu(&mut self, ctx: &egui::Context) {
         self.mode = Mode::Menu;
         self.visible = true;
+        MENU_VISIBLE.store(true, Ordering::SeqCst);
         self.opened_at = Instant::now();
         self.focus_search = self.cfg.show_search;
         self.was_focused = false;
@@ -987,6 +1008,7 @@ impl App {
 
     fn hide(&mut self, ctx: &egui::Context) {
         self.visible = false;
+        MENU_VISIBLE.store(false, Ordering::SeqCst);
         // не Visible(false): скрытое окно нельзя вывести на передний план по Win.
         // Уводим за край экрана и оставляем показанным.
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
