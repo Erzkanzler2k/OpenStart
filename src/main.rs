@@ -613,6 +613,9 @@ static LAST_CLICK: Mutex<Option<(i32, i32, Instant)>> = Mutex::new(None);
 static MENU_VISIBLE: AtomicBool = AtomicBool::new(false);
 /// Системное меню закрыто — пора показать наше.
 static SHOW_PENDING: AtomicBool = AtomicBool::new(false);
+/// Сторож просит показать меню. Не переключатель: не может закрыть меню.
+static SHOW_REQUEST: AtomicBool = AtomicBool::new(false);
+
 
 fn start_hook(ctx: egui::Context) {
     // Хук не должен трогать egui: если обработчик задержится, Windows снимет хук.
@@ -654,7 +657,9 @@ fn start_hook(ctx: egui::Context) {
             }
             // системное меню закрылось — показываем своё, ровно один раз
             if SHOW_PENDING.swap(false, Ordering::SeqCst) {
-                TOGGLE.store(true, Ordering::SeqCst);
+                // только просьба: показать, если меню всё ещё скрыто.
+                // переключать нельзя, иначе просьба съедает нажатие Win
+                SHOW_REQUEST.store(true, Ordering::SeqCst);
                 wake();
             }
         }
@@ -3097,6 +3102,8 @@ fn row_w_sel(
 
 impl Drop for App {
     fn drop(&mut self) {
+        // без этой строки в логе процесс не завершился сам, его убили снаружи
+        log_line("stop");
         tray_remove();
     }
 }
@@ -3151,6 +3158,9 @@ impl eframe::App for App {
             } else {
                 self.show_menu(ctx);
             }
+        } else if SHOW_REQUEST.swap(false, Ordering::SeqCst) && !self.visible {
+            // нажатие пользователя всегда важнее просьбы сторожа
+            self.show_menu(ctx);
         }
 
         if ctx.input(|i| i.viewport().close_requested()) {
