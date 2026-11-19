@@ -1595,10 +1595,8 @@ impl App {
     }
 
     fn settings_ui(&mut self, ctx: &egui::Context) {
-        let bg = egui::Color32::from_rgb(0x1b, 0x1b, 0x1f);
-        let side = egui::Color32::from_rgb(0x15, 0x15, 0x1a);
-        let text = egui::Color32::from_rgb(0xe6, 0xe6, 0xef);
-        let muted = egui::Color32::from_rgb(0x8a, 0x8a, 0x99);
+        let bg = egui::Color32::from_rgb(0x1c, 0x1c, 0x21);
+        let side = egui::Color32::from_rgb(0x17, 0x17, 0x1b);
         let mut changed = false;
 
         egui::SidePanel::left("nav")
@@ -1614,10 +1612,8 @@ impl App {
             )
             .show(ctx, |ui| {
                 let back = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("\u{E72B}").size(16.0).color(text),
-                    )
-                    .frame(false),
+                    egui::Button::new(egui::RichText::new("\u{E72B}").size(16.0).color(INK))
+                        .frame(false),
                 );
                 if back.clicked() {
                     if self.page >= 3 {
@@ -1639,33 +1635,31 @@ impl App {
                     })
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("\u{E721}")
-                                    .font(egui::FontId::proportional(12.0))
-                                    .color(muted),
-                            );
-                            ui.add_space(4.0);
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.setting_filter)
                                     .hint_text("Найти параметр")
-                                    .desired_width(f32::INFINITY)
+                                    .desired_width((ui.available_width() - 22.0).max(40.0))
                                     .frame(false),
+                            );
+                            ui.label(
+                                egui::RichText::new("\u{E721}")
+                                    .font(egui::FontId::proportional(12.0))
+                                    .color(INK_DIM),
                             );
                         });
                     });
                 ui.add_space(12.0);
 
-                for (i, (icon, name)) in [
-                    ("\u{E80F}", "Меню «Пуск»"),
-                    ("\u{E713}", "Управление"),
-                    ("\u{E946}", "О программе"),
-                ]
-                .iter()
-                .enumerate()
-                {
-                    let selected = self.page == i;
-                    if nav_item(ui, icon, name, selected).clicked() {
-                        self.page = i;
+                for (page, icon, name) in [
+                    (0, "\u{E80F}", "Меню «Пуск»"),
+                    (3, "\u{E70F}", "Внешний вид"),
+                    (4, "\u{E790}", "Цвета"),
+                    (5, "\u{E721}", "Поиск"),
+                    (1, "\u{E713}", "Управление"),
+                    (2, "\u{E946}", "О программе"),
+                ] {
+                    if nav_item(ui, icon, name, self.page == page).clicked() {
+                        self.page = page;
                     }
                 }
             });
@@ -1673,10 +1667,10 @@ impl App {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE.fill(bg).inner_margin(egui::Margin {
-                    left: 28,
-                    right: 28,
-                    top: 20,
-                    bottom: 16,
+                    left: 32,
+                    right: 32,
+                    top: 24,
+                    bottom: 20,
                 }),
             )
             .show(ctx, |ui| {
@@ -1693,8 +1687,11 @@ impl App {
                         3 => {
                             changed = self.page_appearance(ui);
                         }
-                        _ => {
+                        4 => {
                             changed = self.page_colors(ui);
+                        }
+                        _ => {
+                            changed = self.page_search(ui);
                         }
                     });
             });
@@ -1705,14 +1702,10 @@ impl App {
     }
 
     fn page_styles(&mut self, ui: &mut egui::Ui) -> bool {
-        let text = egui::Color32::from_rgb(0xe6, 0xe6, 0xef);
-        let muted = egui::Color32::from_rgb(0x8a, 0x8a, 0x99);
         let mut changed = false;
 
-        ui.label(egui::RichText::new("Меню «Пуск»").size(28.0).strong().color(text));
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new("Стиль меню «Пуск»").size(13.5).color(muted));
-        ui.add_space(14.0);
+        page_title(ui, "Меню «Пуск»");
+        section_title(ui, "Стиль меню «Пуск»");
 
         let filter = self.setting_filter.trim().to_lowercase();
         egui::Grid::new("style-cards")
@@ -1735,37 +1728,17 @@ impl App {
                 }
             });
 
-        ui.add_space(10.0);
-        if option_row(
-            ui,
-            "\u{E70F}",
-            "Внешний вид",
-            "Тёмное меню, прозрачность, поиск, плитки",
-        )
-        .clicked()
-        {
-            self.page = 3;
-        }
-        ui.add_space(6.0);
-        if option_row(
-            ui,
-            "\u{E790}",
-            "Цвета",
-            "Светлая или тёмная схема меню",
-        )
-        .clicked()
-        {
-            self.page = 4;
-        }
-        ui.add_space(10.0);
+        ui.add_space(16.0);
         if ui
             .add(
                 egui::Button::new(
-                    egui::RichText::new("Показать меню").size(13.0).color(egui::Color32::BLACK),
+                    egui::RichText::new("Показать меню")
+                        .size(13.0)
+                        .color(egui::Color32::BLACK),
                 )
                 .fill(ACCENT)
                 .corner_radius(egui::CornerRadius::same(6))
-                .min_size(egui::vec2(150.0, 32.0)),
+                .min_size(egui::vec2(150.0, 34.0)),
             )
             .clicked()
         {
@@ -1775,166 +1748,450 @@ impl App {
     }
 
     fn page_appearance(&mut self, ui: &mut egui::Ui) -> bool {
-        let text = egui::Color32::from_rgb(0xe6, 0xe6, 0xef);
-        let muted = egui::Color32::from_rgb(0x8a, 0x8a, 0x99);
         let mut changed = false;
 
-        ui.label(egui::RichText::new("Внешний вид").size(26.0).strong().color(text));
-        ui.add_space(14.0);
+        page_title(ui, "Внешний вид");
 
+        section_title(ui, "Меню «Пуск»");
         let mut dark = self.cfg.dark;
-        if ui.checkbox(&mut dark, "Тёмное меню").changed() {
-            self.cfg.dark = dark;
-            changed = true;
-        }
-        ui.add_space(6.0);
         let mut search = self.cfg.show_search;
-        if ui.checkbox(&mut search, "Показывать поиск").changed() {
-            self.cfg.show_search = search;
-            changed = true;
-        }
-        ui.add_space(6.0);
         let mut tiles = self.cfg.tiles;
-        if ui.checkbox(&mut tiles, "Плитки закреплённых сверху").changed() {
-            self.cfg.tiles = tiles;
-            changed = true;
-        }
-        ui.add_space(12.0);
+        setting_group(ui, |ui| {
+            changed |= switch_row(
+                ui,
+                "\u{E706}",
+                "Тёмное меню",
+                "Тёмная или светлая схема меню «Пуск»",
+                &mut dark,
+            );
+            changed |= switch_row(
+                ui,
+                "\u{E721}",
+                "Строка поиска",
+                "Искать программы прямо в меню",
+                &mut search,
+            );
+            changed |= switch_row(
+                ui,
+                "\u{E80F}",
+                "Плитки закреплённых",
+                "Плитки сверху в стилях с сеткой",
+                &mut tiles,
+            );
+        });
+        self.cfg.dark = dark;
+        self.cfg.show_search = search;
+        self.cfg.tiles = tiles;
+
+        ui.add_space(18.0);
+        section_title(ui, "Прозрачность");
         let mut alpha = self.cfg.alpha as i32;
-        if ui
-            .add(egui::Slider::new(&mut alpha, 80..=255).text("Непрозрачность меню"))
-            .changed()
-        {
-            self.cfg.alpha = alpha as u8;
-            changed = true;
-        }
-        ui.add_space(10.0);
+        setting_group(ui, |ui| {
+            changed |= slider_row(
+                ui,
+                "\u{E790}",
+                "Непрозрачность меню",
+                "Насколько меню пропускает фон рабочего стола",
+                &mut alpha,
+                80,
+                255,
+            );
+        });
+        self.cfg.alpha = alpha as u8;
+
+        ui.add_space(14.0);
         ui.label(
-            egui::RichText::new("Изменения применяются сразу, перезапуск не нужен.")
+            egui::RichText::new("Изменения применяются при следующем открытии меню.")
                 .size(12.0)
-                .color(muted),
+                .color(INK_DIM),
         );
         changed
     }
 
     fn page_colors(&mut self, ui: &mut egui::Ui) -> bool {
-        let text = egui::Color32::from_rgb(0xe6, 0xe6, 0xef);
-        let muted = egui::Color32::from_rgb(0x8a, 0x8a, 0x99);
         let mut changed = false;
 
-        ui.label(egui::RichText::new("Цвета").size(26.0).strong().color(text));
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            if ui.selectable_label(self.cfg.dark, "Тёмная схема").clicked() && !self.cfg.dark {
-                self.cfg.dark = true;
-                changed = true;
-            }
-            ui.add_space(10.0);
-            if ui.selectable_label(!self.cfg.dark, "Светлая схема").clicked() && self.cfg.dark {
-                self.cfg.dark = false;
-                changed = true;
-            }
+        page_title(ui, "Цвета");
+
+        section_title(ui, "Схема меню");
+        let mut dark = self.cfg.dark;
+        setting_group(ui, |ui| {
+            changed |= switch_row(
+                ui,
+                "\u{E706}",
+                "Тёмная схема",
+                "Выключите для светлого меню",
+                &mut dark,
+            );
         });
-        ui.add_space(12.0);
+        self.cfg.dark = dark;
+
+        ui.add_space(18.0);
+        section_title(ui, "Фон");
         let mut alpha = self.cfg.alpha as i32;
-        if ui
-            .add(egui::Slider::new(&mut alpha, 80..=255).text("Непрозрачность фона"))
-            .changed()
-        {
-            self.cfg.alpha = alpha as u8;
-            changed = true;
-        }
-        ui.add_space(12.0);
+        setting_group(ui, |ui| {
+            changed |= slider_row(
+                ui,
+                "\u{E790}",
+                "Непрозрачность фона",
+                "Плотность фона меню",
+                &mut alpha,
+                80,
+                255,
+            );
+        });
+        self.cfg.alpha = alpha as u8;
+
+        ui.add_space(14.0);
         ui.label(
             egui::RichText::new(
                 "Цвет акцента — золотой (#e0af68). Свои цветовые схемы пока не поддерживаются.",
             )
             .size(12.0)
-            .color(muted),
+            .color(INK_DIM),
+        );
+        changed
+    }
+
+    fn page_search(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+
+        page_title(ui, "Поиск");
+
+        section_title(ui, "В меню «Пуск»");
+        let mut search = self.cfg.show_search;
+        setting_group(ui, |ui| {
+            changed |= switch_row(
+                ui,
+                "\u{E721}",
+                "Строка поиска",
+                "Поле поиска в верхней части меню",
+                &mut search,
+            );
+        });
+        self.cfg.show_search = search;
+
+        ui.add_space(14.0);
+        ui.label(
+            egui::RichText::new(
+                "Поиск идёт по ярлыкам меню «Пуск» Windows и именам программ. Всё локально, индекс не создаётся и сеть не используется.",
+            )
+            .size(12.0)
+            .color(INK_DIM),
         );
         changed
     }
 
     fn page_manage(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) -> bool {
-        let text = egui::Color32::from_rgb(0xe6, 0xe6, 0xef);
-        let muted = egui::Color32::from_rgb(0x8a, 0x8a, 0x99);
+        page_title(ui, "Управление");
 
-        ui.label(egui::RichText::new("Управление").size(26.0).strong().color(text));
-        ui.add_space(10.0);
-        ui.label(
-            egui::RichText::new(format!(
-                "Найдено программ: {}. Настройки: {}",
-                self.apps.len(),
-                config_path().display()
-            ))
-            .size(12.0)
-            .color(muted),
-        );
-        ui.add_space(14.0);
-
+        section_title(ui, "Запуск");
         let mut auto = self.autostart;
-        if ui
-            .checkbox(&mut auto, "Запускать при входе в Windows")
-            .changed()
-        {
-            self.autostart = auto;
-            set_autostart(auto);
-        }
-        ui.add_space(10.0);
-        if ui.button("Пересканировать программы").clicked() {
+        let found = format!("Найдено программ: {}", self.apps.len());
+        let mut rescan = false;
+        setting_group(ui, |ui| {
+            if switch_row(
+                ui,
+                "\u{E768}",
+                "Запускать при входе в Windows",
+                "Меню будет готово сразу после входа",
+                &mut auto,
+            ) {
+                set_autostart(auto);
+            }
+            rescan = nav_row(ui, "\u{E72C}", "Пересканировать программы", &found).clicked();
+        });
+        self.autostart = auto;
+        if rescan {
             self.apps = scan_apps();
             attach_icons(ctx, &mut self.apps);
         }
-        if ui.button("Открыть папку настроек").clicked() {
+
+        ui.add_space(18.0);
+        section_title(ui, "Настройки");
+        let mut open_dir = false;
+        let mut reset = false;
+        let mut quit = false;
+        let dir = config_path().display().to_string();
+        setting_group(ui, |ui| {
+            open_dir = nav_row(ui, "\u{E838}", "Открыть папку настроек", &dir).clicked();
+            reset = nav_row(
+                ui,
+                "\u{E777}",
+                "Сбросить настройки",
+                "Вернуть стиль Windows 11 и параметры по умолчанию",
+            )
+            .clicked();
+            quit = nav_row(ui, "\u{E7E8}", "Выход", "Закрыть OpenStart11").clicked();
+        });
+        if open_dir {
             if let Some(dir) = config_path().parent() {
                 let _ = std::process::Command::new("explorer.exe").arg(dir).spawn();
             }
         }
-        if ui.button("Сбросить настройки").clicked() {
+        if reset {
             self.cfg = Config::default();
             self.save();
         }
-        ui.add_space(16.0);
-        if ui.button("Выход").clicked() {
+        if quit {
             self.quit(ctx);
         }
-        ui.add_space(12.0);
+
+        ui.add_space(14.0);
         ui.label(
             egui::RichText::new(
-                "Меню открывается по клавише Win. Настройки хранятся в собственном файле, реестр не трогается.",
+                "Меню открывается по клавише Win. Настройки хранятся в собственном файле, \
+                 реестр не трогается.",
             )
             .size(12.0)
-            .color(muted),
+            .color(INK_DIM),
         );
         false
     }
 
     fn page_about(&mut self, ui: &mut egui::Ui) {
-        let text = egui::Color32::from_rgb(0xe6, 0xe6, 0xef);
-        let muted = egui::Color32::from_rgb(0x8a, 0x8a, 0x99);
+        page_title(ui, "О программе");
 
-        ui.label(egui::RichText::new("О программе").size(26.0).strong().color(text));
-        ui.add_space(10.0);
-        ui.label(
-            egui::RichText::new(format!(
-                "OpenStart11 {} — самостоятельное меню «Пуск» для Windows.",
-                env!("CARGO_PKG_VERSION")
-            ))
-            .size(14.0)
-            .color(text),
-        );
-        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let (logo, _) =
+                ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
+            let painter = ui.painter();
+            painter.rect_filled(logo, egui::CornerRadius::same(14), ACCENT);
+            painter.text(
+                logo.center(),
+                egui::Align2::CENTER_CENTER,
+                "\u{E74A}",
+                egui::FontId::proportional(28.0),
+                egui::Color32::BLACK,
+            );
+            ui.add_space(14.0);
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("OpenStart11")
+                        .size(22.0)
+                        .strong()
+                        .color(INK),
+                );
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new("Меню «Пуск» для Windows")
+                        .size(12.5)
+                        .color(INK_DIM),
+                );
+            });
+        });
+
+        ui.add_space(20.0);
+        section_title(ui, "Сборка");
+        let mut github = false;
+        setting_group(ui, |ui| {
+            info_row(
+                ui,
+                "\u{E946}",
+                &format!("Версия {}", env!("CARGO_PKG_VERSION")),
+                "Собственная реализация, без Start11 и реестра",
+            );
+            github =
+                nav_row(ui, "\u{E774}", "GitHub и релизы", "github.com/Erzkanzler2k/OpenStart11")
+                    .clicked();
+            info_row(
+                ui,
+                "\u{E73E}",
+                "Лицензия",
+                "MIT. Start11 не используется и не требуется",
+            );
+        });
+        if github {
+            launch_target("https://github.com/Erzkanzler2k/OpenStart11");
+        }
+
+        ui.add_space(14.0);
         ui.label(
             egui::RichText::new(
-                "Своя реализация: перехват Win, собственные стили, поиск по ярлыкам \
-                 меню «Пуск» Windows, запуск программ. Start11 не нужен и не используется.\n\n\
-                 Не делает: замену панели задач, UWP-программы без ярлыков, ручное \
+                "Не делает: замену панели задач, UWP-программы без ярлыков, ручное \
                  закрепление плиток.",
             )
-            .size(12.5)
-            .color(muted),
+            .size(12.0)
+            .color(INK_DIM),
         );
     }
+
+}
+
+/// Общие цвета окна настроек.
+const PANEL_BG: egui::Color32 = egui::Color32::from_rgb(0x26, 0x26, 0x2c);
+const PANEL_LINE: egui::Color32 = egui::Color32::from_rgb(0x33, 0x33, 0x3a);
+const INK: egui::Color32 = egui::Color32::from_rgb(0xe8, 0xe8, 0xef);
+const INK_DIM: egui::Color32 = egui::Color32::from_rgb(0x94, 0x94, 0x9f);
+const ROW_HOVER: egui::Color32 = egui::Color32::from_rgb(0x2e, 0x2e, 0x35);
+
+fn page_title(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(28.0).strong().color(INK));
+    ui.add_space(18.0);
+}
+
+fn section_title(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(13.5).strong().color(INK));
+    ui.add_space(8.0);
+}
+
+/// Рамка-группа: строки рисуются без отступов, фон один на всю группу.
+fn setting_group(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::NONE
+        .fill(PANEL_BG)
+        .stroke(egui::Stroke::new(1.0, PANEL_LINE))
+        .corner_radius(egui::CornerRadius::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            add(ui);
+        });
+}
+
+fn row_base(
+    ui: &mut egui::Ui,
+    icon: &str,
+    title: &str,
+    desc: &str,
+    sense: egui::Sense,
+) -> (egui::Rect, egui::Response) {
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 60.0), sense);
+    let painter = ui.painter();
+    if resp.hovered() {
+        painter.rect_filled(rect, egui::CornerRadius::ZERO, ROW_HOVER);
+    }
+    let text_x = if icon.is_empty() {
+        rect.min.x + 18.0
+    } else {
+        painter.text(
+            egui::pos2(rect.min.x + 22.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::proportional(17.0),
+            INK_DIM,
+        );
+        rect.min.x + 52.0
+    };
+    painter.text(
+        egui::pos2(text_x, rect.min.y + 13.0),
+        egui::Align2::LEFT_TOP,
+        title,
+        egui::FontId::proportional(13.0),
+        INK,
+    );
+    painter.text(
+        egui::pos2(text_x, rect.min.y + 32.0),
+        egui::Align2::LEFT_TOP,
+        desc,
+        egui::FontId::proportional(11.5),
+        INK_DIM,
+    );
+    painter.hline(rect.x_range(), rect.max.y, egui::Stroke::new(1.0, PANEL_LINE));
+    (rect, resp)
+}
+
+fn nav_row(ui: &mut egui::Ui, icon: &str, title: &str, desc: &str) -> egui::Response {
+    let (rect, resp) = row_base(ui, icon, title, desc, egui::Sense::click());
+    ui.painter().text(
+        egui::pos2(rect.max.x - 22.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        "\u{E76C}",
+        egui::FontId::proportional(12.0),
+        INK_DIM,
+    );
+    resp
+}
+
+fn info_row(ui: &mut egui::Ui, icon: &str, title: &str, desc: &str) {
+    row_base(ui, icon, title, desc, egui::Sense::hover());
+}
+
+fn switch_row(
+    ui: &mut egui::Ui,
+    icon: &str,
+    title: &str,
+    desc: &str,
+    on: &mut bool,
+) -> bool {
+    let (rect, resp) = row_base(ui, icon, title, desc, egui::Sense::click());
+    let pill = egui::Rect::from_min_size(
+        egui::pos2(rect.max.x - 58.0, rect.center().y - 11.0),
+        egui::vec2(38.0, 22.0),
+    );
+    let painter = ui.painter();
+    painter.text(
+        egui::pos2(pill.min.x - 10.0, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        if *on { "Вкл" } else { "Выкл" },
+        egui::FontId::proportional(12.0),
+        INK_DIM,
+    );
+    painter.rect_filled(
+        pill,
+        egui::CornerRadius::same(11),
+        if *on {
+            ACCENT
+        } else {
+            egui::Color32::from_rgb(0x3c, 0x3c, 0x44)
+        },
+    );
+    let knob_x = if *on { pill.max.x - 11.0 } else { pill.min.x + 11.0 };
+    painter.circle_filled(
+        egui::pos2(knob_x, pill.center().y),
+        8.0,
+        egui::Color32::WHITE,
+    );
+    if resp.clicked() {
+        *on = !*on;
+        return true;
+    }
+    false
+}
+
+fn slider_row(
+    ui: &mut egui::Ui,
+    icon: &str,
+    title: &str,
+    desc: &str,
+    value: &mut i32,
+    min: i32,
+    max: i32,
+) -> bool {
+    let (rect, resp) = row_base(ui, icon, title, desc, egui::Sense::click_and_drag());
+    let track = egui::Rect::from_min_max(
+        egui::pos2(rect.max.x - 240.0, rect.center().y - 2.0),
+        egui::pos2(rect.max.x - 22.0, rect.center().y + 2.0),
+    );
+    let mut changed = false;
+    if let Some(pos) = resp.interact_pointer_pos() {
+        if resp.clicked() || resp.dragged() {
+            let f = ((pos.x - track.min.x) / track.width()).clamp(0.0, 1.0);
+            let v = min + (f * (max - min) as f32).round() as i32;
+            if v != *value {
+                *value = v;
+                changed = true;
+            }
+        }
+    }
+    let frac = ((*value - min) as f32 / (max - min) as f32).clamp(0.0, 1.0);
+    let painter = ui.painter();
+    painter.rect_filled(
+        track,
+        egui::CornerRadius::same(2),
+        egui::Color32::from_rgb(0x3c, 0x3c, 0x44),
+    );
+    painter.rect_filled(
+        egui::Rect::from_min_max(track.min, egui::pos2(track.min.x + track.width() * frac, track.max.y)),
+        egui::CornerRadius::same(2),
+        ACCENT,
+    );
+    painter.circle_filled(
+        egui::pos2(track.min.x + track.width() * frac, track.center().y),
+        8.0,
+        egui::Color32::WHITE,
+    );
+    changed
 }
 
 fn nav_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui::Response {
@@ -1947,7 +2204,15 @@ fn nav_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui:
         painter.rect_filled(
             rect,
             egui::CornerRadius::same(6),
-            egui::Color32::from_rgb(0x2b, 0x2b, 0x33),
+            egui::Color32::from_rgb(0x2a, 0x2a, 0x31),
+        );
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                rect.min + egui::vec2(1.0, 8.0),
+                egui::vec2(3.0, rect.height() - 16.0),
+            ),
+            egui::CornerRadius::same(2),
+            ACCENT,
         );
     } else if resp.hovered() {
         painter.rect_filled(
@@ -1956,27 +2221,22 @@ fn nav_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui:
             egui::Color32::from_rgb(0x20, 0x20, 0x26),
         );
     }
-    let icon_rect = egui::Rect::from_min_size(
-        rect.min + egui::vec2(8.0, 7.0),
-        egui::vec2(20.0, 20.0),
-    );
-    painter.rect_filled(icon_rect, egui::CornerRadius::same(4), ACCENT_DARK);
     painter.text(
-        icon_rect.center(),
+        egui::pos2(rect.min.x + 16.0, rect.center().y),
         egui::Align2::CENTER_CENTER,
         icon,
-        egui::FontId::proportional(11.0),
-        egui::Color32::WHITE,
+        egui::FontId::proportional(16.0),
+        if selected { ACCENT } else { INK_DIM },
     );
     painter.text(
-        egui::pos2(rect.min.x + 36.0, rect.center().y),
+        egui::pos2(rect.min.x + 38.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        egui::FontId::proportional(12.5),
+        egui::FontId::proportional(13.0),
         if selected {
-            egui::Color32::from_rgb(0xe6, 0xe6, 0xef)
+            egui::Color32::from_rgb(0xf0, 0xf0, 0xf4)
         } else {
-            egui::Color32::from_rgb(0xb8, 0xb8, 0xc4)
+            egui::Color32::from_rgb(0xb4, 0xb4, 0xbf)
         },
     );
     resp
@@ -1989,12 +2249,16 @@ fn style_card(
     desc: &str,
     selected: bool,
 ) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(212.0, 168.0), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(216.0, 178.0), egui::Sense::click());
     let painter = ui.painter();
     painter.rect_filled(
         rect,
         egui::CornerRadius::same(8),
-        egui::Color32::from_rgb(0x24, 0x24, 0x2a),
+        if selected {
+            egui::Color32::from_rgb(0x2c, 0x2c, 0x34)
+        } else {
+            egui::Color32::from_rgb(0x24, 0x24, 0x2a)
+        },
     );
     if selected {
         painter.rect_stroke(
@@ -2006,19 +2270,25 @@ fn style_card(
     }
     let preview = egui::Rect::from_min_size(
         rect.min + egui::vec2(12.0, 12.0),
-        egui::vec2(rect.width() - 24.0, 90.0),
+        egui::vec2(rect.width() - 24.0, 100.0),
     );
     painter.rect_filled(
         preview,
         egui::CornerRadius::same(5),
-        egui::Color32::from_rgb(0x2e, 0x2e, 0x36),
+        egui::Color32::from_rgb(0x2b, 0x32, 0x3e),
     );
     draw_preview(painter, preview.shrink(6.0), style);
+    painter.rect_stroke(
+        preview,
+        egui::CornerRadius::same(5),
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x40, 0x4a, 0x5b)),
+        egui::StrokeKind::Inside,
+    );
     painter.text(
-        rect.min + egui::vec2(14.0, 112.0),
+        rect.min + egui::vec2(14.0, 122.0),
         egui::Align2::LEFT_TOP,
         name,
-        egui::FontId::proportional(13.5),
+        egui::FontId::proportional(14.5),
         if selected {
             ACCENT
         } else {
@@ -2027,20 +2297,20 @@ fn style_card(
     );
     let galley = painter.layout(
         desc.to_string(),
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(11.5),
         egui::Color32::from_rgb(0x8a, 0x8a, 0x99),
         rect.width() - 28.0,
     );
-    painter.galley(rect.min + egui::vec2(14.0, 134.0), galley, egui::Color32::WHITE);
+    painter.galley(rect.min + egui::vec2(14.0, 144.0), galley, egui::Color32::WHITE);
     resp
 }
 
 fn draw_preview(painter: &egui::Painter, rect: egui::Rect, style: usize) {
-    let win = egui::Color32::from_rgb(0x1f, 0x1f, 0x24);
-    let panel = egui::Color32::from_rgb(0x2b, 0x2b, 0x32);
-    let panel_hi = egui::Color32::from_rgb(0x37, 0x37, 0x40);
-    let ink = egui::Color32::from_rgb(0x4c, 0x4c, 0x58);
-    let line = egui::Color32::from_rgb(0x58, 0x58, 0x65);
+    let win = egui::Color32::from_rgb(0x32, 0x3a, 0x47);
+    let panel = egui::Color32::from_rgb(0x3d, 0x46, 0x55);
+    let panel_hi = egui::Color32::from_rgb(0x4a, 0x54, 0x65);
+    let ink = egui::Color32::from_rgb(0xc6, 0xce, 0xda);
+    let line = egui::Color32::from_rgb(0x97, 0xa1, 0xb0);
     let accent = ACCENT;
 
     let x = |f: f32| rect.min.x + rect.width() * f;
@@ -2199,58 +2469,6 @@ fn draw_preview(painter: &egui::Painter, rect: egui::Rect, style: usize) {
             bx(0.43, 0.79, 0.57, 0.84, panel_hi, 4);
         }
     }
-}
-
-fn option_row(
-    ui: &mut egui::Ui,
-    icon: &str,
-    title: &str,
-    desc: &str,
-) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), 56.0),
-        egui::Sense::click(),
-    );
-    let painter = ui.painter();
-    painter.rect_filled(
-        rect,
-        egui::CornerRadius::same(8),
-        egui::Color32::from_rgb(0x24, 0x24, 0x2a),
-    );
-    let icon_rect = egui::Rect::from_min_size(
-        rect.min + egui::vec2(14.0, 14.0),
-        egui::vec2(28.0, 28.0),
-    );
-    painter.rect_filled(icon_rect, egui::CornerRadius::same(6), ACCENT_DARK);
-    painter.text(
-        icon_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        egui::FontId::proportional(14.0),
-        egui::Color32::WHITE,
-    );
-    painter.text(
-        egui::pos2(rect.min.x + 54.0, rect.min.y + 12.0),
-        egui::Align2::LEFT_TOP,
-        title,
-        egui::FontId::proportional(13.0),
-        egui::Color32::from_rgb(0xe6, 0xe6, 0xef),
-    );
-    painter.text(
-        egui::pos2(rect.min.x + 54.0, rect.min.y + 31.0),
-        egui::Align2::LEFT_TOP,
-        desc,
-        egui::FontId::proportional(11.0),
-        egui::Color32::from_rgb(0x8a, 0x8a, 0x99),
-    );
-    painter.text(
-        egui::pos2(rect.max.x - 18.0, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        "\u{E76C}",
-        egui::FontId::proportional(11.0),
-        egui::Color32::from_rgb(0x8a, 0x8a, 0x99),
-    );
-    resp
 }
 
 fn open_folder(name: &str) {
