@@ -3,7 +3,7 @@
 //! OpenStart11 — самостоятельное меню «Пуск» для Windows 10/11.//!
 //! Меню открывается по клавише Win (низкоуровневый хук клавиатуры), показывает
 //! ярлыки из пользовательского и общего меню «Пуск», ищет по ним и запускает их.
-//! Пять стилей (Windows 7 / Modern / Windows 10 / Windows 11 / Windows App)
+//! Семь стилей (Windows 7 / Modern / Windows 10 / Windows 11 / Windows App / Windows Pro / Windows 10X)
 //! рисуются самим приложением. Настройки лежат в
 //! %APPDATA%\OpenStart11\config.json — никакого Start11 и никакого реестра.
 
@@ -36,7 +36,9 @@ const STYLES: &[(&str, &str)] = &[
     ("Стиль Modern", "Обновлённая классика"),
     ("Стиль Windows 10", "Плитки Windows 10"),
     ("Стиль Windows 11", "Центрированное меню"),
-    ("Стиль Windows App", "Список Windows 11"),
+    ("Стиль Windows App", "Полный список программ"),
+    ("Стиль Windows Pro", "Плоские списки без плиток"),
+    ("Стиль Windows 10X", "Центрированные значки"),
 ];
 
 const NAV: &[&str] = &["Меню «Пуск»", "Управление", "О программе"];
@@ -392,7 +394,9 @@ fn menu_size(style: usize) -> (f32, f32) {
         1 => (480.0, 590.0),
         2 => (520.0, 600.0),
         3 => (1000.0, 700.0),
-        _ => (1000.0, 680.0),
+        4 => (1000.0, 680.0),
+        5 => (640.0, 640.0),
+        _ => (860.0, 700.0),
     }
 }
 
@@ -815,43 +819,12 @@ impl App {
         let mut launch: Option<String> = None;
 
         if self.cfg.show_search {
-            let mut resp = None;
-            egui::Frame::NONE
-                .fill(t.card)
-                .stroke(egui::Stroke::new(1.0, t.card_hi))
-                .corner_radius(egui::CornerRadius::same(if modern { 20 } else { 6 }))
-                .inner_margin(egui::Margin {
-                    left: 14,
-                    right: 14,
-                    top: 9,
-                    bottom: 9,
-                })
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("\u{E721}")
-                                .font(egui::FontId::proportional(14.0))
-                                .color(t.muted),
-                        );
-                        ui.add_space(8.0);
-                        resp = Some(ui.add(
-                            egui::TextEdit::singleline(&mut self.query)
-                                .hint_text(if modern {
-                                    "Поиск приложений и файлов"
-                                } else {
-                                    "Поиск приложений"
-                                })
-                                .desired_width(f32::INFINITY)
-                                .frame(false),
-                        ));
-                    });
-                });
-            if let Some(r) = resp {
-                if self.focus_search {
-                    r.request_focus();
-                    self.focus_search = false;
-                }
-            }
+            let hint = if modern {
+                "Поиск приложений и файлов"
+            } else {
+                "Поиск приложений"
+            };
+            self.search_box(ui, t, modern, hint);
             ui.add_space(16.0);
         }
 
@@ -988,6 +961,242 @@ impl App {
         launch
     }
 
+    fn search_box(&mut self, ui: &mut egui::Ui, t: &Theme, round: bool, hint: &str) {
+        let mut resp = None;
+        egui::Frame::NONE
+            .fill(t.card)
+            .stroke(egui::Stroke::new(1.0, t.card_hi))
+            .corner_radius(egui::CornerRadius::same(if round { 20 } else { 6 }))
+            .inner_margin(egui::Margin {
+                left: 14,
+                right: 14,
+                top: 9,
+                bottom: 9,
+            })
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("\u{E721}")
+                            .font(egui::FontId::proportional(14.0))
+                            .color(t.muted),
+                    );
+                    ui.add_space(8.0);
+                    resp = Some(ui.add(
+                        egui::TextEdit::singleline(&mut self.query)
+                            .hint_text(hint)
+                            .desired_width(f32::INFINITY)
+                            .frame(false),
+                    ));
+                });
+            });
+        if let Some(r) = resp {
+            if self.focus_search {
+                r.request_focus();
+                self.focus_search = false;
+            }
+        }
+    }
+
+    fn matching(&self) -> Vec<usize> {
+        let q = self.query.trim().to_lowercase();
+        self.apps
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| q.is_empty() || a.name.to_lowercase().contains(&q))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    fn footer_bar(&mut self, ui: &mut egui::Ui, t: &Theme, user: &str, small: bool) -> bool {
+        let mut open_settings = false;
+        let d = if small { 26.0 } else { 28.0 };
+        ui.horizontal(|ui| {
+            let (av, _) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::hover());
+            ui.painter().circle_filled(av.center(), d / 2.0, t.card_hi);
+            ui.painter().text(
+                av.center(),
+                egui::Align2::CENTER_CENTER,
+                letter(user),
+                egui::FontId::proportional(if small { 11.0 } else { 12.0 }),
+                t.text,
+            );
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new(user).size(13.0).color(t.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let power = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("\u{E7E8}")
+                            .font(egui::FontId::proportional(15.0))
+                            .color(t.text),
+                    )
+                    .frame(false),
+                );
+                if power.clicked() {
+                    self.power_open = !self.power_open;
+                }
+                ui.add_space(10.0);
+                let gear = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("\u{E713}")
+                            .font(egui::FontId::proportional(15.0))
+                            .color(t.muted),
+                    )
+                    .frame(false),
+                );
+                if gear.clicked() {
+                    open_settings = true;
+                }
+            });
+        });
+        open_settings
+    }
+
+    fn app_list_pane(&mut self, ui: &mut egui::Ui, t: &Theme, back: bool) -> Option<String> {
+        let mut launch = None;
+        if self.cfg.show_search {
+            self.search_box(ui, t, true, "Поиск приложений и файлов");
+            ui.add_space(12.0);
+        }
+        if back {
+            ui.horizontal(|ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("\u{E72B}")
+                                .font(egui::FontId::proportional(13.0))
+                                .color(t.text),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    self.all_apps = false;
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Все приложения")
+                        .size(13.0)
+                        .strong()
+                        .color(t.text),
+                );
+            });
+            ui.add_space(8.0);
+        } else {
+            ui.label(
+                egui::RichText::new("Все приложения")
+                    .size(13.0)
+                    .strong()
+                    .color(t.text),
+            );
+            ui.add_space(6.0);
+        }
+        let list = self.matching();
+        egui::ScrollArea::vertical()
+            .id_salt("app-list")
+            .auto_shrink([false, false])
+            .max_height((ui.available_height() - 56.0).max(80.0))
+            .show(ui, |ui| {
+                for &idx in &list {
+                    if row(ui, &self.apps[idx], t).clicked() {
+                        launch = Some(self.apps[idx].target.clone());
+                    }
+                }
+            });
+        launch
+    }
+
+    fn pro_pane(&mut self, ui: &mut egui::Ui, t: &Theme) -> Option<String> {
+        let mut launch = None;
+        if self.cfg.show_search {
+            self.search_box(ui, t, false, "Поиск приложений");
+            ui.add_space(12.0);
+        }
+        ui.label(
+            egui::RichText::new("Закреплено")
+                .size(13.0)
+                .strong()
+                .color(t.text),
+        );
+        ui.add_space(6.0);
+        let list = self.matching();
+        let w = ((ui.available_width() - 10.0) / 2.0).max(120.0);
+        egui::ScrollArea::vertical()
+            .id_salt("pro")
+            .auto_shrink([false, false])
+            .max_height((ui.available_height() - 56.0).max(80.0))
+            .show(ui, |ui| {
+                egui::Grid::new("pro-grid")
+                    .num_columns(2)
+                    .spacing([10.0, 2.0])
+                    .show(ui, |ui| {
+                        for (n, &idx) in list.iter().enumerate() {
+                            if row_w(ui, &self.apps[idx], t, w).clicked() {
+                                launch = Some(self.apps[idx].target.clone());
+                            }
+                            if n % 2 == 1 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+            });
+        launch
+    }
+
+    fn tenx_pane(&mut self, ui: &mut egui::Ui, t: &Theme) -> Option<String> {
+        if self.all_apps {
+            return self.app_list_pane(ui, t, true);
+        }
+        let mut launch = None;
+        if self.cfg.show_search {
+            ui.vertical_centered(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(420.0, 34.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.search_box(ui, t, true, "Поиск"),
+                );
+            });
+            ui.add_space(14.0);
+        }
+        let list = self.matching();
+        let cols = 5;
+        let take = (cols * 3).min(list.len());
+        let pad = ((ui.available_width() - cols as f32 * 102.0) / 2.0).max(0.0);
+        ui.horizontal(|ui| {
+            ui.add_space(pad);
+            egui::Grid::new("tenx")
+                .num_columns(cols)
+                .spacing([6.0, 6.0])
+                .show(ui, |ui| {
+                    for (n, &idx) in list.iter().take(take).enumerate() {
+                        if tile(ui, &self.apps[idx], t, 96.0, 92.0).clicked() {
+                            launch = Some(self.apps[idx].target.clone());
+                        }
+                        if (n + 1) % cols == 0 {
+                            ui.end_row();
+                        }
+                    }
+                });
+        });
+        if !self.query.trim().is_empty() {
+            return launch;
+        }
+        ui.add_space(10.0);
+        ui.vertical_centered(|ui| {
+            let btn = egui::Button::new(
+                egui::RichText::new("Все приложения  \u{E76C}")
+                    .size(12.0)
+                    .color(t.text),
+            )
+            .fill(t.card)
+            .corner_radius(egui::CornerRadius::same(16))
+            .min_size(egui::vec2(0.0, 30.0));
+            if ui.add(btn).clicked() {
+                self.all_apps = true;
+            }
+        });
+        launch
+    }
+
     fn menu_ui(&mut self, ctx: &egui::Context) {
         let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
@@ -1016,9 +1225,9 @@ impl App {
             return;
         }
 
-        let modern = self.cfg.style >= 3;
+        let modern = self.cfg.style == 3;
         let t = theme(self.cfg.dark, self.cfg.alpha);
-        let margin = if modern { 22 } else { 10 };
+        let margin = if self.cfg.style >= 3 { 22 } else { 10 };
         let user = std::env::var("USERNAME").unwrap_or_default();
 
         let mut launch: Option<String> = None;
@@ -1057,7 +1266,18 @@ impl App {
                     }),
             )
             .show(ctx, |ui| {
-                if !modern {
+                if self.cfg.style >= 4 {
+                    let small = self.cfg.style == 6;
+                    launch = match self.cfg.style {
+                        4 => self.app_list_pane(ui, &t, false),
+                        5 => self.pro_pane(ui, &t),
+                        _ => self.tenx_pane(ui, &t),
+                    };
+                    ui.add_space((ui.available_height() - 34.0).max(6.0));
+                    if self.footer_bar(ui, &t, &user, small) {
+                        open_settings = true;
+                    }
+                } else if !modern {
                     ui.label(
                         egui::RichText::new("OpenStart11")
                             .color(t.accent)
@@ -1068,50 +1288,9 @@ impl App {
                     launch = self.left_pane(ui, &t, false);
 
                     ui.add_space((ui.available_height() - 34.0).max(6.0));
-                    ui.horizontal(|ui| {
-                        let (av, _) = ui.allocate_exact_size(
-                            egui::vec2(28.0, 28.0),
-                            egui::Sense::hover(),
-                        );
-                        ui.painter().circle_filled(av.center(), 14.0, t.card_hi);
-                        ui.painter().text(
-                            av.center(),
-                            egui::Align2::CENTER_CENTER,
-                            letter(&user),
-                            egui::FontId::proportional(12.0),
-                            t.text,
-                        );
-                        ui.add_space(10.0);
-                        ui.label(egui::RichText::new(&user).size(13.0).color(t.text));
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                let power = ui.add(
-                                    egui::Button::new(
-                                        egui::RichText::new("\u{E7E8}")
-                                            .font(egui::FontId::proportional(15.0))
-                                            .color(t.text),
-                                    )
-                                    .frame(false),
-                                );
-                                if power.clicked() {
-                                    self.power_open = !self.power_open;
-                                }
-                                ui.add_space(10.0);
-                                let gear = ui.add(
-                                    egui::Button::new(
-                                        egui::RichText::new("\u{E713}")
-                                            .font(egui::FontId::proportional(15.0))
-                                            .color(t.muted),
-                                    )
-                                    .frame(false),
-                                );
-                                if gear.clicked() {
-                                    open_settings = true;
-                                }
-                            },
-                        );
-                    });
+                    if self.footer_bar(ui, &t, &user, false) {
+                        open_settings = true;
+                    }
                 } else {
                     let full_w = ui.available_width();
                     let full_h = ui.available_height();
@@ -1832,6 +2011,51 @@ fn draw_preview(painter: &egui::Painter, rect: egui::Rect, style: usize) {
                 );
             }
         }
+        5 => {
+            painter.rect_filled(rect, 1.0, dim);
+            let half = rect.width() / 2.0;
+            for c in 0..2 {
+                for r in 0..5 {
+                    let x = rect.min.x + 6.0 + c as f32 * half;
+                    let y = rect.min.y + 7.0 + r as f32 * 14.0;
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(10.0, 10.0)),
+                        1.0,
+                        ink,
+                    );
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(x + 14.0, y + 3.0),
+                            egui::vec2(half - 30.0, 4.0),
+                        ),
+                        1.0,
+                        line,
+                    );
+                }
+            }
+        }
+        6 => {
+            painter.rect_filled(rect, 3.0, dim);
+            let cw = rect.width() / 4.0;
+            for r in 0..3 {
+                for c in 0..4 {
+                    let center = egui::pos2(
+                        rect.min.x + cw * (c as f32 + 0.5),
+                        rect.min.y + 15.0 + r as f32 * 21.0,
+                    );
+                    painter.rect_filled(
+                        egui::Rect::from_center_size(center, egui::vec2(13.0, 13.0)),
+                        3.0,
+                        ink,
+                    );
+                    painter.rect_filled(
+                        egui::Rect::from_center_size(center + egui::vec2(0.0, 10.0), egui::vec2(15.0, 2.0)),
+                        1.0,
+                        line,
+                    );
+                }
+            }
+        }
         _ => {
             painter.rect_filled(rect, 2.0, dim);
             for r in 0..5 {
@@ -2032,8 +2256,11 @@ fn rec_row(ui: &mut egui::Ui, app: &AppEntry, t: &Theme) -> egui::Response {
 }
 
 fn row(ui: &mut egui::Ui, app: &AppEntry, t: &Theme) -> egui::Response {
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.0), egui::Sense::click());
+    row_w(ui, app, t, ui.available_width())
+}
+
+fn row_w(ui: &mut egui::Ui, app: &AppEntry, t: &Theme, w: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 34.0), egui::Sense::click());
     let painter = ui.painter().with_clip_rect(rect);
     if resp.hovered() {
         painter.rect_filled(rect, egui::CornerRadius::same(5), t.card_hi);
