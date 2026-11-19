@@ -1,11 +1,11 @@
 #![windows_subsystem = "windows"]
 
-//! OpenStart11 — самостоятельное меню «Пуск» для Windows 10/11.//!
+//! OpenStart — самостоятельное меню «Пуск» для Windows 10/11.//!
 //! Меню открывается по клавише Win (низкоуровневый хук клавиатуры), показывает
 //! ярлыки из пользовательского и общего меню «Пуск», ищет по ним и запускает их.
 //! Семь стилей (Windows 7 / Modern / Windows 10 / Windows 11 / Windows App / Windows Pro / Windows 10X)
 //! рисуются самим приложением. Настройки лежат в
-//! %APPDATA%\OpenStart11\config.json — никакого Start11 и никакого реестра.
+//! %APPDATA%\OpenStart\config.json. Реестр не используется.
 
 use std::collections::BTreeMap;
 use std::os::windows::process::CommandExt;
@@ -121,7 +121,7 @@ fn theme(dark: bool, alpha: u8) -> Theme {
 
 fn config_path() -> PathBuf {
     let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
-    PathBuf::from(base).join("OpenStart11").join("config.json")
+    PathBuf::from(base).join("OpenStart").join("config.json")
 }
 
 fn load_config() -> Config {
@@ -323,7 +323,7 @@ fn autostart_enabled() -> bool {
             "query",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
             "/v",
-            "OpenStart11",
+            "OpenStart",
         ])
         .creation_flags(0x08000000)
         .output()
@@ -341,7 +341,7 @@ fn set_autostart(on: bool) {
             "add",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
             "/v",
-            "OpenStart11",
+            "OpenStart",
             "/t",
             "REG_SZ",
             "/d",
@@ -353,7 +353,7 @@ fn set_autostart(on: bool) {
             "delete",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
             "/v",
-            "OpenStart11",
+            "OpenStart",
             "/f",
         ]);
     }
@@ -486,7 +486,7 @@ fn capture_backdrop(x: i32, y: i32, w: i32, h: i32) -> Option<egui::ColorImage> 
 /// Скруглить окно средствами DWM (Windows 11).
 fn round_window(_w: i32, _h: i32) {
     use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
-    let title: Vec<u16> = "OpenStart11\0".encode_utf16().collect();
+    let title: Vec<u16> = "OpenStart\0".encode_utf16().collect();
     unsafe {
         let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
         if hwnd.is_null() {
@@ -499,7 +499,7 @@ fn round_window(_w: i32, _h: i32) {
 }
 
 fn is_minimized_now() -> bool {
-    let title: Vec<u16> = "OpenStart11\0".encode_utf16().collect();
+    let title: Vec<u16> = "OpenStart\0".encode_utf16().collect();
     unsafe {
         let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
         !hwnd.is_null() && windows_sys::Win32::UI::WindowsAndMessaging::IsIconic(hwnd) != 0
@@ -508,7 +508,7 @@ fn is_minimized_now() -> bool {
 
 /// Вывести окно поверх всех и забрать фокус: без этого меню закрывается сразу.
 fn force_foreground() {
-    let title: Vec<u16> = "OpenStart11\0".encode_utf16().collect();
+    let title: Vec<u16> = "OpenStart\0".encode_utf16().collect();
     unsafe {
         let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
         if hwnd.is_null() {
@@ -1422,7 +1422,7 @@ impl App {
                     open_settings |= s;
                 } else if !modern {
                     ui.label(
-                        egui::RichText::new("OpenStart11")
+                        egui::RichText::new("OpenStart")
                             .color(t.accent)
                             .size(15.0)
                             .strong(),
@@ -1928,7 +1928,7 @@ impl App {
                 "Вернуть стиль Windows 11 и параметры по умолчанию",
             )
             .clicked();
-            quit = nav_row(ui, "\u{E7E8}", "Выход", "Закрыть OpenStart11").clicked();
+            quit = nav_row(ui, "\u{E7E8}", "Выход", "Закрыть OpenStart").clicked();
         });
         if open_dir {
             if let Some(dir) = config_path().parent() {
@@ -1973,7 +1973,7 @@ impl App {
             ui.add_space(14.0);
             ui.vertical(|ui| {
                 ui.label(
-                    egui::RichText::new("OpenStart11")
+                    egui::RichText::new("OpenStart")
                         .size(22.0)
                         .strong()
                         .color(INK),
@@ -1995,20 +1995,20 @@ impl App {
                 ui,
                 "\u{E946}",
                 &format!("Версия {}", env!("CARGO_PKG_VERSION")),
-                "Собственная реализация, без Start11 и реестра",
+                "Собственная реализация на Rust, без реестра",
             );
             github =
-                nav_row(ui, "\u{E774}", "GitHub и релизы", "github.com/Erzkanzler2k/OpenStart11")
+                nav_row(ui, "\u{E774}", "GitHub и релизы", "github.com/Erzkanzler2k/OpenStart")
                     .clicked();
             info_row(
                 ui,
                 "\u{E73E}",
                 "Лицензия",
-                "MIT. Start11 не используется и не требуется",
+                "MIT",
             );
         });
         if github {
-            launch_target("https://github.com/Erzkanzler2k/OpenStart11");
+            launch_target("https://github.com/Erzkanzler2k/OpenStart");
         }
 
         ui.add_space(14.0);
@@ -2690,11 +2690,11 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 640.0])
             .with_resizable(false)
-            .with_title("OpenStart11"),
+            .with_title("OpenStart"),
         ..Default::default()
     };
     eframe::run_native(
-        "OpenStart11",
+        "OpenStart",
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
