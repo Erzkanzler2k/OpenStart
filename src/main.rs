@@ -682,12 +682,84 @@ fn in_start_zone(x: i32, y: i32) -> bool {
     let Some((cx, cy)) = zone else {
         return false;
     };
-    if (y - cy).abs() > 24 || !taskbar_contains(x, y) {
+    if !taskbar_contains(x, y) {
         return false;
     }
-    // справа сразу за кнопкой «Пуск» начинаются кнопки программ — их не трогаем
     let right = tasklist_left().map(|l| l - 2).unwrap_or(i32::MAX);
+    zone_hit(cx, cy, right, x, y)
+}
+
+/// Геометрия зоны кнопки «Пуск»: половина кнопки, но не дальше кнопок программ.
+fn zone_hit(cx: i32, cy: i32, right: i32, x: i32, y: i32) -> bool {
+    if (y - cy).abs() > 24 {
+        return false;
+    }
     x >= cx - 24 && x <= (cx + 24).min(right)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zone_covers_button_width() {
+        // кнопка 48 px, клик запомнен по центру
+        assert!(zone_hit(500, 745, i32::MAX, 476, 745));
+        assert!(zone_hit(500, 745, i32::MAX, 524, 745));
+        assert!(!zone_hit(500, 745, i32::MAX, 475, 745));
+    }
+
+    #[test]
+    fn zone_stops_at_app_buttons() {
+        // соседняя кнопка программы начинается сразу справа
+        assert!(!zone_hit(500, 745, 520, 525, 745));
+        assert!(zone_hit(500, 745, 520, 519, 745));
+    }
+
+    #[test]
+    fn zone_ignores_other_rows() {
+        assert!(!zone_hit(500, 745, i32::MAX, 500, 700));
+    }
+
+    #[test]
+    fn ranking_puts_prefix_first() {
+        let names = vec![
+            "Store Manager".to_string(),
+            "Microsoft Store".to_string(),
+            "Store".to_string(),
+        ];
+        assert_eq!(rank_matches(&names, "store"), vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn ranking_skips_non_matches() {
+        let names = vec!["Calculator".to_string(), "Paint".to_string()];
+        assert_eq!(rank_matches(&names, "calc"), vec![0]);
+        assert!(rank_matches(&names, "zzz").is_empty());
+    }
+
+    #[test]
+    fn empty_query_keeps_order() {
+        let names = vec!["b".to_string(), "a".to_string()];
+        assert_eq!(rank_matches(&names, ""), vec![0, 1]);
+    }
+
+    #[test]
+    fn old_config_without_start_button_loads() {
+        let json = r#"{"style":3,"dark":true,"alpha":242,"show_search":true,"tiles":true}"#;
+        let cfg: Config = serde_json::from_str(json).expect("старый конфиг должен читаться");
+        assert_eq!(cfg.style, 3);
+        assert_eq!(cfg.start_x, 0);
+        assert_eq!(cfg.start_y, 0);
+    }
+
+    #[test]
+    fn default_config_is_windows_11() {
+        let cfg = Config::default();
+        assert_eq!(cfg.style, 3);
+        assert!(cfg.dark);
+        assert_eq!(cfg.alpha, 242);
+    }
 }
 
 /// Левый край области кнопок запущенных программ на панели задач.
@@ -873,6 +945,39 @@ unsafe fn send_win_down() {
         dwExtraInfo: 1,
     };
     SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+}
+
+/// Совпадения поиска: сначала название с этого слова, потом по слову, потом подстрока.
+fn rank_matches(names: &[String], query: &str) -> Vec<usize> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return (0..names.len()).collect();
+    }
+    let mut scored: Vec<(u8, usize)> = names
+        .iter()
+        .enumerate()
+        .filter_map(|(i, name)| {
+            let name = name.to_lowercase();
+            let score = if name.starts_with(&q) {
+                0
+            } else if name
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|w| !w.is_empty() && w.starts_with(&q))
+            {
+                1
+            } else if name.contains(&q) {
+                2
+            } else {
+                return None;
+            };
+            Some((score, i))
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| names[a.1].to_lowercase().cmp(&names[b.1].to_lowercase()))
+    });
+    scored.into_iter().map(|(_, i)| i).collect()
 }
 
 // ---------- приложение ----------
@@ -1263,40 +1368,8 @@ impl App {
 
     /// Совпадения поиска: сначала название с этого слова, потом по слову, потом подстрока.
     fn matching(&self) -> Vec<usize> {
-        let q = self.query.trim().to_lowercase();
-        if q.is_empty() {
-            return (0..self.apps.len()).collect();
-        }
-        let mut scored: Vec<(u8, usize)> = self
-            .apps
-            .iter()
-            .enumerate()
-            .filter_map(|(i, a)| {
-                let name = a.name.to_lowercase();
-                let score = if name.starts_with(&q) {
-                    0
-                } else if name
-                    .split(|c: char| !c.is_alphanumeric())
-                    .any(|w| !w.is_empty() && w.starts_with(&q))
-                {
-                    1
-                } else if name.contains(&q) {
-                    2
-                } else {
-                    return None;
-                };
-                Some((score, i))
-            })
-            .collect();
-        scored.sort_by(|a, b| {
-            a.0.cmp(&b.0).then_with(|| {
-                self.apps[a.1]
-                    .name
-                    .to_lowercase()
-                    .cmp(&self.apps[b.1].name.to_lowercase())
-            })
-        });
-        scored.into_iter().map(|(_, i)| i).collect()
+        let names: Vec<String> = self.apps.iter().map(|a| a.name.clone()).collect();
+        rank_matches(&names, &self.query)
     }
 
     fn footer_bar(&mut self, ui: &mut egui::Ui, t: &Theme, user: &str, small: bool) -> bool {
